@@ -23,12 +23,19 @@ Most "make it faster" work optimizes one number and silently regresses another. 
 
 ## Install
 
-**As a Claude Code / Codex plugin** — add the repo as a plugin (marketplace entry or local path); the `multi-goal` skill and `/multi-goal` command then drive the flow. The host coding agent's LLM does the reasoning (hypotheses, factor confirmation); the scripts are deterministic and host-neutral.
+**As a Claude Code plugin** — this repo is its own single-plugin marketplace:
+```text
+/plugin marketplace add tyroneross/multi-goal
+/plugin install multi-goal@multi-goal
+```
+Then `/multi-goal` (guided flow), `/doe` (direct matrix), and `/status` are available. The host coding agent's LLM does the reasoning (hypotheses, factor confirmation); the scripts are deterministic and host-neutral.
+
+**As a Codex plugin** — a `.codex-plugin/plugin.json` manifest ships alongside the Claude one; point Codex at the repo.
 
 **Standalone** — the scripts run on their own:
 ```bash
 uv run python scripts/doe.py detect 4          # which design for 4 factors
-uv run pytest -q                                # 72 tests
+uv run pytest -q                                # 76 tests
 ```
 Requirements: Python ≥3.10, numpy. Dev: pytest.
 
