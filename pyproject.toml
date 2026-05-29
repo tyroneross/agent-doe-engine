@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2025-2026 Tyrone Ross, Jr <46267523+tyroneross@users.noreply.github.com>
+# SPDX-License-Identifier: Apache-2.0
+[project]
+name = "multi-goal"
+version = "0.1.0"
+description = "Multi-objective optimization via Design of Experiments — DOE matrix, multi-response effects, scalarization / desirability / Pareto selection, autoresearch fallback."
+authors = [{ name = "Tyrone Ross, Jr", email = "46267523+tyroneross@users.noreply.github.com" }]
+license = "Apache-2.0"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24"]
+
+[project.urls]
+Homepage = "https://github.com/tyroneross/multi-goal"
+Repository = "https://github.com/tyroneross/multi-goal"
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
