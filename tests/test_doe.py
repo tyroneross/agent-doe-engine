@@ -1,0 +1,515 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2025-2026 Tyrone Ross, Jr <46267523+tyroneross@users.noreply.github.com>
+# SPDX-License-Identifier: Apache-2.0
+"""Tests for doe.py — design generation + effects analysis accuracy.
+
+Ported from build-loop/scripts/test_optimize_doe.py; all design-matrix tests
+are byte-faithful. Multi-objective analyze tests are appended below.
+
+Tests:
+  DesignGeneratorTests    — full / fractional / PB matrices shape + orthogonality
+  RoutingTests            — auto-routing picks the right design type by k
+  EffectsAccuracyTests    — OLS recovers known ground-truth coefficients
+  LevelMappingTests       — ±1 → concrete level mapping
+  CliRoundTripTests       — generate → analyze (legacy single-metric) pipeline
+  PyDOE3EquivalenceTests  — skipped unless pyDOE3 installed
+  MultiObjectiveAnalyzeTests  — NEW: multi-objective analyze via --objectives
+"""
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+try:
+    import numpy as np
+except ImportError:
+    sys.stderr.write("test_doe.py requires numpy; skipping\n")
+    sys.exit(0)
+
+# Robust import of doe.py from scripts/
+SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
+sys.path.insert(0, str(SCRIPTS_DIR))
+import doe  # noqa: E402
+
+SCRIPT = SCRIPTS_DIR / "doe.py"
+
+
+# ---------------------------------------------------------------------------
+# Direct unit tests on the design generators (ported, byte-faithful)
+# ---------------------------------------------------------------------------
+
+class DesignGeneratorTests(unittest.TestCase):
+    def test_full_factorial_shape(self) -> None:
+        for k in range(1, 6):
+            with self.subTest(k=k):
+                d = doe.full_factorial_2level(k)
+                self.assertEqual(d.shape, (2 ** k, k))
+                self.assertTrue(np.all((d == -1) | (d == 1)))
+
+    def test_full_factorial_orthogonal(self) -> None:
+        for k in range(2, 6):
+            with self.subTest(k=k):
+                d = doe.full_factorial_2level(k)
+                gram = d.T @ d
+                off_diag = gram - np.diag(np.diag(gram))
+                self.assertTrue(np.allclose(off_diag, 0))
+
+    def test_fracfact_shape(self) -> None:
+        # 2^(5-2) → 8 runs, 5 factors
+        d = doe.fracfact("a b c ab ac")
+        self.assertEqual(d.shape, (8, 5))
+
+    def test_fracfact_orthogonal(self) -> None:
+        for k, gen in doe.FRACFACT_8_RUN.items():
+            with self.subTest(k=k):
+                d = doe.fracfact(gen)
+                gram = d.T @ d
+                off_diag = gram - np.diag(np.diag(gram))
+                self.assertTrue(np.allclose(off_diag, 0))
+
+    def test_pb_12_shape(self) -> None:
+        d = doe.plackett_burman_12()
+        self.assertEqual(d.shape, (12, 11))
+
+    def test_pb_12_orthogonal(self) -> None:
+        d = doe.plackett_burman_12()
+        gram = d.T @ d
+        off_diag = gram - np.diag(np.diag(gram))
+        self.assertTrue(np.allclose(off_diag, 0),
+                        f"PB off-diag max = {np.max(np.abs(off_diag))}")
+
+
+class RoutingTests(unittest.TestCase):
+    def test_select_design(self) -> None:
+        cases = {1: "autoresearch", 2: "full", 3: "full",
+                 4: "fractional", 5: "fractional", 7: "fractional",
+                 8: "pb", 11: "pb"}
+        for k, expected in cases.items():
+            with self.subTest(k=k):
+                self.assertEqual(doe.select_design(k), expected)
+
+    def test_build_design_dispatch(self) -> None:
+        m, name = doe.build_design(3, "full")
+        self.assertEqual(m.shape, (8, 3))
+        self.assertIn("full factorial", name)
+
+        m, name = doe.build_design(5, "fractional")
+        self.assertEqual(m.shape, (8, 5))
+        self.assertIn("fractional factorial", name)
+
+        m, name = doe.build_design(8, "pb")
+        self.assertEqual(m.shape, (12, 8))
+        self.assertIn("Plackett-Burman", name)
+
+
+class EffectsAccuracyTests(unittest.TestCase):
+    """Recover known ground-truth coefficients from synthetic measurements."""
+
+    def test_full_factorial_no_noise(self) -> None:
+        d = doe.full_factorial_2level(3)
+        # y = 10 + 5*x1 + 2*x2 - 0.3*x3 + 0.5*x1*x2
+        y = 10 + 5 * d[:, 0] + 2 * d[:, 1] - 0.3 * d[:, 2] + 0.5 * d[:, 0] * d[:, 1]
+        e = doe.fit_effects(d, y, include_interactions=True)
+        self.assertAlmostEqual(e["intercept"], 10, places=8)
+        self.assertAlmostEqual(e["main"][0], 5, places=8)
+        self.assertAlmostEqual(e["main"][1], 2, places=8)
+        self.assertAlmostEqual(e["main"][2], -0.3, places=8)
+        self.assertAlmostEqual(e["interactions"][(0, 1)], 0.5, places=8)
+
+    def test_fractional_with_noise(self) -> None:
+        d = doe.fracfact("a b c ab ac")
+        rng = np.random.default_rng(42)
+        truth_main = [3.0, -1.5, 0.8, 2.2, -0.4]
+        y = 20 + sum(t * d[:, i] for i, t in enumerate(truth_main)) + rng.normal(0, 0.1, 8)
+        e = doe.fit_effects(d, y, include_interactions=False)
+        for i, expected in enumerate(truth_main):
+            with self.subTest(factor=f"x{i+1}"):
+                self.assertAlmostEqual(e["main"][i], expected, delta=0.2)
+
+    def test_pb_screening_identifies_vital_few(self) -> None:
+        d = doe.plackett_burman_12()
+        rng = np.random.default_rng(11)
+        # Only first 3 factors active
+        y = 50 + 4 * d[:, 0] - 2.5 * d[:, 1] + 1.0 * d[:, 2] + rng.normal(0, 0.3, 12)
+        e = doe.fit_effects(d, y, include_interactions=False)
+        # Top 3 by |effect| should be factors 0, 1, 2
+        ranking = sorted(e["main"].items(), key=lambda kv: -abs(kv[1]))
+        top3 = {idx for idx, _ in ranking[:3]}
+        self.assertEqual(top3, {0, 1, 2})
+
+
+class LevelMappingTests(unittest.TestCase):
+    def test_low_high_mapping(self) -> None:
+        d = np.array([[-1, 1], [1, -1]], dtype=float)
+        factors = [
+            {"name": "x", "low": 16, "high": 64},
+            {"name": "y", "low": 1, "high": 5},
+        ]
+        runs = doe.map_levels(d, factors)
+        self.assertEqual(runs[0]["_factors"], {"x": 16, "y": 5})
+        self.assertEqual(runs[1]["_factors"], {"x": 64, "y": 1})
+
+    def test_levels_array(self) -> None:
+        d = np.array([[-1], [1]], dtype=float)
+        factors = [{"name": "x", "levels": ["off", "on"]}]
+        runs = doe.map_levels(d, factors)
+        self.assertEqual(runs[0]["_factors"], {"x": "off"})
+        self.assertEqual(runs[1]["_factors"], {"x": "on"})
+
+
+class CliRoundTripTests(unittest.TestCase):
+    """Exercise the CLI end-to-end: generate matrix, fake measurements, analyze."""
+
+    def test_generate_then_analyze(self) -> None:
+        factors = [
+            {"name": "batch_size", "low": 16, "high": 64},
+            {"name": "retries", "low": 1, "high": 5},
+            {"name": "workers", "low": 2, "high": 8},
+        ]
+        # Step 1: generate
+        r = subprocess.run(
+            [sys.executable, str(SCRIPT), "generate",
+             "--factors", json.dumps(factors), "--design", "auto", "--seed", "1"],
+            capture_output=True, text=True, timeout=10,
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        design = json.loads(r.stdout)
+        self.assertEqual(design["design"]["type"], "full")
+        self.assertEqual(design["design"]["n_runs"], 8)
+
+        # Step 2: synthesize measurements where x1 dominates, x3 mildly opposes
+        with tempfile.TemporaryDirectory() as tmp:
+            design_path = Path(tmp) / "design.json"
+            results_path = Path(tmp) / "results.jsonl"
+            design_path.write_text(json.dumps(design))
+            matrix = np.array(design["matrix"])
+            y = 100 - 8 * matrix[:, 0] + 0.5 * matrix[:, 1] + 1 * matrix[:, 2]
+            with open(results_path, "w") as f:
+                for run_id in range(len(y)):
+                    f.write(json.dumps({"run_id": run_id, "value": float(y[run_id])}) + "\n")
+
+            # Step 3: analyze (legacy single-metric path)
+            r2 = subprocess.run(
+                [sys.executable, str(SCRIPT), "analyze",
+                 "--design", str(design_path), "--results", str(results_path),
+                 "--direction", "lower"],
+                capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(r2.returncode, 0, r2.stderr)
+            analysis = json.loads(r2.stdout)
+            top = analysis["ranked_effects"][0]
+            self.assertEqual(top["term"], "batch_size")
+            self.assertAlmostEqual(top["effect"], -8, delta=0.5)
+
+    def test_analyze_emits_best_factors(self) -> None:
+        factors = [
+            {"name": "batch_size", "low": 16, "high": 64},
+            {"name": "retries", "low": 1, "high": 5},
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            r = subprocess.run(
+                [sys.executable, str(SCRIPT), "generate",
+                 "--factors", json.dumps(factors), "--design", "full", "--seed", "0"],
+                capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(r.returncode, 0, r.stderr)
+            design = json.loads(r.stdout)
+            (tmp / "design.json").write_text(json.dumps(design))
+            # Fake measurements: y = 100 - 8*x1 - 2*x2 (lower is better)
+            matrix = np.array(design["matrix"])
+            y = 100 - 8 * matrix[:, 0] - 2 * matrix[:, 1]
+            with (tmp / "results.jsonl").open("w") as f:
+                for i in range(len(y)):
+                    f.write(json.dumps({"run_id": i, "value": float(y[i])}) + "\n")
+            # Analyze with direction=lower
+            r2 = subprocess.run(
+                [sys.executable, str(SCRIPT), "analyze",
+                 "--design", str(tmp / "design.json"),
+                 "--results", str(tmp / "results.jsonl"),
+                 "--direction", "lower"],
+                capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(r2.returncode, 0, r2.stderr)
+            effects = json.loads(r2.stdout)
+            self.assertIn("best_factors", effects, "analyze must emit best_factors block")
+            self.assertEqual(effects["best_factors"], {"batch_size": 64, "retries": 5})
+            self.assertEqual(effects["direction"], "lower")
+
+
+class PyDOE3EquivalenceTests(unittest.TestCase):
+    """If pyDOE3 happens to be installed, verify our matrices match.
+
+    Usually skipped because multi-goal's stdlib+numpy convention means pyDOE3
+    isn't installed.
+    """
+
+    def test_equivalence_when_pydoe3_present(self) -> None:
+        try:
+            from pyDOE3 import fullfact as pd_full, fracfact as pd_frac
+        except ImportError:
+            self.skipTest("pyDOE3 not installed (expected — multi-goal is stdlib+numpy)")
+
+        # Convert pyDOE3's 0/1 coding to our ±1 coding for comparison
+        their_full = pd_full([2, 2, 2]) * 2 - 1
+        mine_full = doe.full_factorial_2level(3)
+        self.assertTrue(
+            np.array_equal(np.array(sorted(map(tuple, their_full))),
+                           np.array(sorted(map(tuple, mine_full)))),
+            "2^3 full factorial differs from pyDOE3",
+        )
+
+        their_frac = pd_frac("a b c ab ac")
+        mine_frac = doe.fracfact("a b c ab ac")
+        self.assertTrue(np.array_equal(their_frac, mine_frac),
+                        "2^(5-2) fractional differs from pyDOE3")
+
+
+# ---------------------------------------------------------------------------
+# Multi-objective analyze tests (new)
+# ---------------------------------------------------------------------------
+
+class MultiObjectiveAnalyzeTests(unittest.TestCase):
+    """2^2 full-factorial with two objectives; hand-computed best under scalarize."""
+
+    # Design: 2 factors (x1, x2), 4 runs.
+    # Coding: run 0=(-1,-1), 1=(-1,+1), 2=(+1,-1), 3=(+1,+1)
+    #
+    # Objective A (obj_a, lower): driven entirely by x1
+    #   obj_a = 10 - 5*x1        (x1=+1 is worse: 5; x1=-1 is better: 15? no:
+    #   wait: "lower is better" and obj_a = 10 - 5*x1 means x1=+1 gives 5 (best)
+    #   Actually we want x1 to be the dominant factor for obj_a.
+    #   obj_a = 10 + 5*x1  → x1=+1 gives 15 (worse), x1=-1 gives 5 (best): lower is better
+    #
+    # Objective B (obj_b, higher): driven entirely by x2
+    #   obj_b = 10 + 5*x2  → x2=+1 gives 15 (best), x2=-1 gives 5 (worse): higher is better
+    #
+    # Per-objective effects:
+    #   obj_a: main effect of x1 = 5 (positive), x2 = 0 → x1 ranks #1
+    #   obj_b: main effect of x2 = 5 (positive), x1 = 0 → x2 ranks #1
+    #
+    # Scalarize (equal weights 0.5 each):
+    #   Bounds: obj_a in [5,15], obj_b in [5,15]
+    #   normalize obj_a (lower): (15-v)/10; normalize obj_b (higher): (v-5)/10
+    #   run 0: obj_a=5, obj_b=5  → norm_a=(15-5)/10=1.0, norm_b=(5-5)/10=0.0  → score=0.5
+    #   run 1: obj_a=5, obj_b=15 → norm_a=1.0, norm_b=1.0 → score=1.0  ← BEST
+    #   run 2: obj_a=15, obj_b=5 → norm_a=0.0, norm_b=0.0 → score=0.0
+    #   run 3: obj_a=15, obj_b=15→ norm_a=0.0, norm_b=1.0 → score=0.5
+    #   Best run = 1 (x1=-1, x2=+1)
+
+    FACTORS = [
+        {"name": "x1", "low": -1, "high": 1},
+        {"name": "x2", "low": -1, "high": 1},
+    ]
+    OBJECTIVES = [
+        {"name": "obj_a", "direction": "lower",  "weight": 0.5},
+        {"name": "obj_b", "direction": "higher", "weight": 0.5},
+    ]
+
+    def _make_design_and_results(self, tmp: Path) -> tuple[Path, Path]:
+        """Generate a 2^2 full-factorial design and hand-built 2-obj results."""
+        r = subprocess.run(
+            [sys.executable, str(SCRIPT), "generate",
+             "--factors", json.dumps(self.FACTORS), "--design", "full", "--seed", "0"],
+            capture_output=True, text=True, timeout=10,
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        design = json.loads(r.stdout)
+        design_path = tmp / "design.json"
+        design_path.write_text(json.dumps(design))
+
+        matrix = np.array(design["matrix"])  # shape (4, 2)
+        results_path = tmp / "results.jsonl"
+        with results_path.open("w") as f:
+            for i in range(4):
+                x1, x2 = matrix[i, 0], matrix[i, 1]
+                obj_a = 10 + 5 * x1   # lower is better; x1=-1 gives 5
+                obj_b = 10 + 5 * x2   # higher is better; x2=+1 gives 15
+                f.write(json.dumps({
+                    "run_id": i,
+                    "values": {"obj_a": float(obj_a), "obj_b": float(obj_b)},
+                    "guard_ok": True,
+                }) + "\n")
+
+        return design_path, results_path
+
+    def test_per_objective_effects_rank_correct_factor(self) -> None:
+        """x1 must be top effect for obj_a; x2 must be top effect for obj_b."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            design_path, results_path = self._make_design_and_results(tmp)
+            obj_arg = json.dumps(self.OBJECTIVES)
+
+            r = subprocess.run(
+                [sys.executable, str(SCRIPT), "analyze",
+                 "--design", str(design_path),
+                 "--results", str(results_path),
+                 "--objectives", obj_arg,
+                 "--selection", "scalarize"],
+                capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(r.returncode, 0, r.stderr)
+            out = json.loads(r.stdout)
+
+            # Structure checks
+            self.assertIn("per_objective", out)
+            self.assertIn("obj_a", out["per_objective"])
+            self.assertIn("obj_b", out["per_objective"])
+            self.assertIn("selection", out)
+
+            # x1 is the top ranked effect for obj_a
+            top_a = out["per_objective"]["obj_a"]["ranked_effects"][0]["term"]
+            self.assertEqual(top_a, "x1",
+                             f"Expected x1 to dominate obj_a; got {top_a}")
+
+            # x2 is the top ranked effect for obj_b
+            top_b = out["per_objective"]["obj_b"]["ranked_effects"][0]["term"]
+            self.assertEqual(top_b, "x2",
+                             f"Expected x2 to dominate obj_b; got {top_b}")
+
+    def test_scalarize_picks_hand_computed_best(self) -> None:
+        """best_run_id must be run 1 (x1=-1, x2=+1) under equal-weight scalarize."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            design_path, results_path = self._make_design_and_results(tmp)
+            obj_arg = json.dumps(self.OBJECTIVES)
+
+            r = subprocess.run(
+                [sys.executable, str(SCRIPT), "analyze",
+                 "--design", str(design_path),
+                 "--results", str(results_path),
+                 "--objectives", obj_arg,
+                 "--selection", "scalarize"],
+                capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(r.returncode, 0, r.stderr)
+            out = json.loads(r.stdout)
+
+            # The design matrix row order from generate with seed=0 may differ from
+            # the ±1 order we manually computed. Find the run_id where x1=-1 and x2=+1.
+            design = json.loads(design_path.read_text())
+            matrix = np.array(design["matrix"])
+            expected_run_id = None
+            for i, row in enumerate(matrix):
+                if row[0] < 0 and row[1] > 0:
+                    expected_run_id = i
+                    break
+            self.assertIsNotNone(expected_run_id, "Could not find x1=-1, x2=+1 row in design")
+
+            actual_best = out["selection"]["best_run_id"]
+            self.assertEqual(
+                actual_best, expected_run_id,
+                f"Expected best_run_id={expected_run_id} (x1=-1,x2=+1); got {actual_best}",
+            )
+
+    def test_single_objective_via_objectives_arg_matches_legacy(self) -> None:
+        """Single-objective --objectives run gives the same best_run as the legacy path."""
+        factors = [
+            {"name": "batch_size", "low": 16, "high": 64},
+            {"name": "retries", "low": 1, "high": 5},
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            # Generate design
+            r = subprocess.run(
+                [sys.executable, str(SCRIPT), "generate",
+                 "--factors", json.dumps(factors), "--design", "full", "--seed", "0"],
+                capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(r.returncode, 0, r.stderr)
+            design = json.loads(r.stdout)
+            design_path = tmp / "design.json"
+            design_path.write_text(json.dumps(design))
+            matrix = np.array(design["matrix"])
+
+            # y = 100 - 8*x1 - 2*x2 → lower is better → x1=+1, x2=+1 gives 90 (min)
+            y = 100 - 8 * matrix[:, 0] - 2 * matrix[:, 1]
+
+            # Legacy results file: {run_id, value}
+            legacy_path = tmp / "results_legacy.jsonl"
+            with legacy_path.open("w") as f:
+                for i in range(len(y)):
+                    f.write(json.dumps({"run_id": i, "value": float(y[i])}) + "\n")
+
+            # Multi-obj results file: {run_id, values:{latency:...}}
+            multi_path = tmp / "results_multi.jsonl"
+            with multi_path.open("w") as f:
+                for i in range(len(y)):
+                    f.write(json.dumps({
+                        "run_id": i,
+                        "values": {"latency": float(y[i])},
+                        "guard_ok": True,
+                    }) + "\n")
+
+            # Legacy path
+            r_leg = subprocess.run(
+                [sys.executable, str(SCRIPT), "analyze",
+                 "--design", str(design_path),
+                 "--results", str(legacy_path),
+                 "--direction", "lower"],
+                capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(r_leg.returncode, 0, r_leg.stderr)
+            legacy_out = json.loads(r_leg.stdout)
+
+            # Multi-objective path with one objective (also accept legacy lines)
+            single_obj = [{"name": "latency", "direction": "lower", "weight": 1.0}]
+            r_multi = subprocess.run(
+                [sys.executable, str(SCRIPT), "analyze",
+                 "--design", str(design_path),
+                 "--results", str(multi_path),
+                 "--objectives", json.dumps(single_obj),
+                 "--selection", "scalarize"],
+                capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(r_multi.returncode, 0, r_multi.stderr)
+            multi_out = json.loads(r_multi.stdout)
+
+            self.assertEqual(
+                legacy_out["best_run"],
+                multi_out["selection"]["best_run_id"],
+                "Single-objective --objectives path must agree with legacy path on best_run",
+            )
+
+    def test_legacy_value_lines_accepted_with_single_objective(self) -> None:
+        """Legacy {run_id, value} lines are accepted when exactly one objective is declared."""
+        factors = [{"name": "x1", "low": 0, "high": 1}, {"name": "x2", "low": 0, "high": 1}]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            r = subprocess.run(
+                [sys.executable, str(SCRIPT), "generate",
+                 "--factors", json.dumps(factors), "--design", "full", "--seed", "0"],
+                capture_output=True, text=True, timeout=10,
+            )
+            design = json.loads(r.stdout)
+            design_path = tmp / "design.json"
+            design_path.write_text(json.dumps(design))
+            matrix = np.array(design["matrix"])
+            y = 5 + 2 * matrix[:, 0]
+
+            results_path = tmp / "results.jsonl"
+            with results_path.open("w") as f:
+                for i in range(len(y)):
+                    f.write(json.dumps({"run_id": i, "value": float(y[i])}) + "\n")
+
+            single_obj = [{"name": "metric", "direction": "lower", "weight": 1.0}]
+            r2 = subprocess.run(
+                [sys.executable, str(SCRIPT), "analyze",
+                 "--design", str(design_path),
+                 "--results", str(results_path),
+                 "--objectives", json.dumps(single_obj)],
+                capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(r2.returncode, 0, r2.stderr)
+            out = json.loads(r2.stdout)
+            self.assertIn("selection", out)
+            self.assertIn("per_objective", out)
+            self.assertIn("metric", out["per_objective"])
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

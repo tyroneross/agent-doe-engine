@@ -254,3 +254,60 @@ def select_best(
         "pareto_front": front,
         "best_values": best_values,
     }
+
+
+# ---------------------------------------------------------------------------
+# Streaming-loop scoring (autoresearch / loop.py)
+# ---------------------------------------------------------------------------
+
+# NOTE: baseline_aggregate uses a different normalization strategy than
+# select_best's batch min-max.  select_best sees ALL runs simultaneously and
+# can normalize each objective to [0,1] across the observed range.  The
+# autoresearch loop is *streaming* — it scores one candidate at a time against
+# a fixed starting point.  Using batch min-max here would require re-running
+# every past candidate on every iteration.  Instead we express each
+# objective's score as an improvement RATIO vs the fixed baseline: a ratio > 1
+# means the candidate beats the baseline on that objective.  The weighted sum
+# of ratios gives a scalar that the loop can compare across streaming
+# iterations without ever needing to collect a run set first.
+
+_BASELINE_EPSILON = 1e-9  # guard against division by zero (documented below)
+
+
+def baseline_aggregate(values: dict, baseline: dict, objectives: list[dict]) -> float:
+    """Weighted aggregate of per-objective improvement RATIOS vs a fixed baseline.
+
+    For each objective (weights normalized to sum to 1):
+      'lower'  better: r_i = baseline_i / value_i   (>1 = improved)
+      'higher' better: r_i = value_i / baseline_i   (>1 = improved)
+
+    Returns sum_i w_i * r_i. Higher = better. Guards against div-by-zero:
+    when the denominator is 0 (or smaller than _BASELINE_EPSILON) it is
+    replaced with _BASELINE_EPSILON (1e-9).  This makes the ratio very large
+    when the baseline was zero and the new value is positive (big improvement)
+    or 0 when the new value is also zero (no change).  The epsilon value is
+    documented here and in tests so callers know the guard is active.
+
+    This is the loop's keep/revert score; it is distinct from select_best's
+    batch min-max normalization because the loop is streaming (one candidate
+    at a time against a fixed starting point).
+    """
+    w_norm = _normalized_weights(objectives)
+    total = 0.0
+    for w, obj in zip(w_norm, objectives):
+        name = obj["name"]
+        direction = obj.get("direction", "lower")
+        v = float(values[name])
+        b = float(baseline[name])
+
+        if direction == "lower":
+            # lower is better: ratio > 1 when value < baseline
+            denom = v if v >= _BASELINE_EPSILON else _BASELINE_EPSILON
+            r_i = b / denom
+        else:
+            # higher is better: ratio > 1 when value > baseline
+            denom = b if b >= _BASELINE_EPSILON else _BASELINE_EPSILON
+            r_i = v / denom
+
+        total += w * r_i
+    return total

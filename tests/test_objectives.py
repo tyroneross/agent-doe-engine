@@ -425,3 +425,104 @@ class TestSelectBest:
     def test_default_method_is_scalarize(self):
         result = select_best(FOUR_RUNS, TWO_OBJ)
         assert result["method"] == "scalarize"
+
+
+# ---------------------------------------------------------------------------
+# baseline_aggregate (streaming-loop scoring)
+# ---------------------------------------------------------------------------
+
+from objectives import baseline_aggregate  # noqa: E402
+
+
+class TestBaselineAggregate:
+    # Two objectives used across most cases:
+    #   lat: lower=better, weight=0.6
+    #   cost: lower=better, weight=0.4
+    # Normalized weights: lat=0.6, cost=0.4 (already sum to 1)
+    TWO_LOWER = [
+        {"name": "lat",  "direction": "lower", "weight": 0.6},
+        {"name": "cost", "direction": "lower", "weight": 0.4},
+    ]
+
+    def test_baseline_equals_values_returns_1(self):
+        # Every ratio r_i = baseline_i / value_i = 1 => aggregate = 1.0
+        baseline = {"lat": 10.0, "cost": 5.0}
+        values   = {"lat": 10.0, "cost": 5.0}
+        result = baseline_aggregate(values, baseline, self.TWO_LOWER)
+        assert result == pytest.approx(1.0)
+
+    def test_both_improved_returns_greater_than_1(self):
+        # lat: 10/8 = 1.25; cost: 5/5 = 1.0
+        # aggregate = 0.6*1.25 + 0.4*1.0 = 0.75 + 0.40 = 1.15
+        baseline = {"lat": 10.0, "cost": 5.0}
+        values   = {"lat":  8.0, "cost": 5.0}
+        result = baseline_aggregate(values, baseline, self.TWO_LOWER)
+        assert result > 1.0
+        assert result == pytest.approx(0.6 * (10.0 / 8.0) + 0.4 * (5.0 / 5.0))
+
+    def test_mixed_improvement_hand_checked(self):
+        # lat improved: 10/8 = 1.25; cost worsened: 5/7 ≈ 0.7143
+        # aggregate = 0.6*1.25 + 0.4*(5/7) = 0.75 + 0.4*0.714286 = 0.75 + 0.285714 ≈ 1.035714
+        baseline = {"lat": 10.0, "cost": 5.0}
+        values   = {"lat":  8.0, "cost": 7.0}
+        expected = 0.6 * (10.0 / 8.0) + 0.4 * (5.0 / 7.0)
+        result = baseline_aggregate(values, baseline, self.TWO_LOWER)
+        assert result == pytest.approx(expected)
+
+    def test_direction_higher_better(self):
+        # coverage: higher=better, weight=1.0 (only objective)
+        objs = [{"name": "cov", "direction": "higher", "weight": 1.0}]
+        baseline = {"cov": 0.8}
+        # cov improved from 0.8 -> 0.9: ratio = 0.9/0.8 = 1.125 > 1
+        result_improved = baseline_aggregate({"cov": 0.9}, baseline, objs)
+        assert result_improved == pytest.approx(0.9 / 0.8)
+        assert result_improved > 1.0
+        # cov worsened from 0.8 -> 0.7: ratio = 0.7/0.8 = 0.875 < 1
+        result_worse = baseline_aggregate({"cov": 0.7}, baseline, objs)
+        assert result_worse == pytest.approx(0.7 / 0.8)
+        assert result_worse < 1.0
+
+    def test_direction_lower_better(self):
+        # lat: lower=better, weight=1.0
+        objs = [{"name": "lat", "direction": "lower", "weight": 1.0}]
+        baseline = {"lat": 10.0}
+        # improved: 10/8 = 1.25
+        result_improved = baseline_aggregate({"lat": 8.0}, baseline, objs)
+        assert result_improved == pytest.approx(10.0 / 8.0)
+        assert result_improved > 1.0
+        # worsened: 10/12 ≈ 0.833
+        result_worse = baseline_aggregate({"lat": 12.0}, baseline, objs)
+        assert result_worse == pytest.approx(10.0 / 12.0)
+        assert result_worse < 1.0
+
+    def test_div_by_zero_value_zero_lower(self):
+        # lower-better: denom = value. If value=0, use epsilon.
+        # ratio = baseline / epsilon (very large but finite)
+        objs = [{"name": "lat", "direction": "lower", "weight": 1.0}]
+        result = baseline_aggregate({"lat": 0.0}, {"lat": 10.0}, objs)
+        assert math.isfinite(result)
+        assert result > 1.0  # improved (lower is better, value went to 0)
+
+    def test_div_by_zero_baseline_zero_higher(self):
+        # higher-better: denom = baseline. If baseline=0, use epsilon.
+        # ratio = value / epsilon (very large but finite)
+        objs = [{"name": "cov", "direction": "higher", "weight": 1.0}]
+        result = baseline_aggregate({"cov": 0.9}, {"cov": 0.0}, objs)
+        assert math.isfinite(result)
+        assert result > 1.0
+
+    def test_weight_normalization(self):
+        # Weights 2 and 2 should normalize to 0.5 each — same as weights 1 and 1.
+        objs_2_2 = [
+            {"name": "lat",  "direction": "lower", "weight": 2.0},
+            {"name": "cost", "direction": "lower", "weight": 2.0},
+        ]
+        objs_1_1 = [
+            {"name": "lat",  "direction": "lower", "weight": 1.0},
+            {"name": "cost", "direction": "lower", "weight": 1.0},
+        ]
+        baseline = {"lat": 10.0, "cost": 5.0}
+        values   = {"lat":  8.0, "cost": 4.0}
+        r1 = baseline_aggregate(values, baseline, objs_2_2)
+        r2 = baseline_aggregate(values, baseline, objs_1_1)
+        assert r1 == pytest.approx(r2)
