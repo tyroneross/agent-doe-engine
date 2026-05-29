@@ -1,0 +1,427 @@
+# SPDX-FileCopyrightText: 2025-2026 Tyrone Ross, Jr <46267523+tyroneross@users.noreply.github.com>
+# SPDX-License-Identifier: Apache-2.0
+"""
+Tests for scripts/objectives.py
+
+All fixtures are hand-verified numeric examples. No randomness; fully deterministic.
+"""
+
+import math
+import sys
+import os
+
+# Allow importing from scripts/ without an installed package
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
+
+import pytest
+from objectives import (
+    compute_bounds,
+    normalize,
+    scalarize_run,
+    desirability_run,
+    dominates,
+    pareto_front,
+    select_best,
+)
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+TWO_OBJ = [
+    {"name": "latency_ms", "direction": "lower",  "weight": 2.0},
+    {"name": "coverage",   "direction": "higher", "weight": 1.0},
+]
+
+FOUR_RUNS = [
+    {"run_id": 1, "values": {"latency_ms": 100.0, "coverage": 0.9}},
+    {"run_id": 2, "values": {"latency_ms": 200.0, "coverage": 0.8}},
+    {"run_id": 3, "values": {"latency_ms": 150.0, "coverage": 0.6}},
+    {"run_id": 4, "values": {"latency_ms": 120.0, "coverage": 0.7}},
+]
+
+# Bounds for FOUR_RUNS / TWO_OBJ (hand-computed):
+#   latency_ms: min=100, max=200
+#   coverage:   min=0.6, max=0.9
+FOUR_RUNS_BOUNDS = {
+    "latency_ms": {"min": 100.0, "max": 200.0},
+    "coverage":   {"min": 0.6,   "max": 0.9},
+}
+
+
+# ---------------------------------------------------------------------------
+# compute_bounds
+# ---------------------------------------------------------------------------
+
+class TestComputeBounds:
+    def test_correct_bounds(self):
+        b = compute_bounds(FOUR_RUNS, TWO_OBJ)
+        assert b["latency_ms"] == {"min": 100.0, "max": 200.0}
+        assert b["coverage"]   == {"min": 0.6,   "max": 0.9}
+
+    def test_single_run(self):
+        runs = [{"run_id": 1, "values": {"latency_ms": 50.0, "coverage": 0.75}}]
+        b = compute_bounds(runs, TWO_OBJ)
+        assert b["latency_ms"] == {"min": 50.0, "max": 50.0}
+        assert b["coverage"]   == {"min": 0.75, "max": 0.75}
+
+    def test_missing_value_raises(self):
+        bad_runs = [
+            {"run_id": 1, "values": {"latency_ms": 100.0}},  # coverage missing
+            {"run_id": 2, "values": {"latency_ms": 200.0, "coverage": 0.8}},
+        ]
+        with pytest.raises(ValueError, match="coverage"):
+            compute_bounds(bad_runs, TWO_OBJ)
+
+    def test_multiple_objectives(self):
+        objs = [
+            {"name": "a", "direction": "lower"},
+            {"name": "b", "direction": "higher"},
+        ]
+        runs = [
+            {"run_id": 1, "values": {"a": 1.0, "b": 10.0}},
+            {"run_id": 2, "values": {"a": 3.0, "b":  5.0}},
+            {"run_id": 3, "values": {"a": 2.0, "b":  8.0}},
+        ]
+        b = compute_bounds(runs, objs)
+        assert b["a"] == {"min": 1.0, "max": 3.0}
+        assert b["b"] == {"min": 5.0, "max": 10.0}
+
+
+# ---------------------------------------------------------------------------
+# normalize
+# ---------------------------------------------------------------------------
+
+class TestNormalize:
+    def test_higher_best_is_1(self):
+        assert normalize(10.0, "higher", 0.0, 10.0) == pytest.approx(1.0)
+
+    def test_higher_worst_is_0(self):
+        assert normalize(0.0, "higher", 0.0, 10.0) == pytest.approx(0.0)
+
+    def test_higher_midpoint(self):
+        assert normalize(5.0, "higher", 0.0, 10.0) == pytest.approx(0.5)
+
+    def test_lower_best_is_1(self):
+        # Lowest value is best for "lower"; value=0 when lo=0, hi=10
+        assert normalize(0.0, "lower", 0.0, 10.0) == pytest.approx(1.0)
+
+    def test_lower_worst_is_0(self):
+        assert normalize(10.0, "lower", 0.0, 10.0) == pytest.approx(0.0)
+
+    def test_lower_midpoint(self):
+        assert normalize(5.0, "lower", 0.0, 10.0) == pytest.approx(0.5)
+
+    def test_degenerate_hi_equals_lo_returns_1(self):
+        assert normalize(7.0, "higher", 7.0, 7.0) == 1.0
+        assert normalize(7.0, "lower",  7.0, 7.0) == 1.0
+
+    def test_higher_endpoints_explicit(self):
+        # lo=2, hi=8: value=2 -> 0.0; value=8 -> 1.0
+        assert normalize(2.0, "higher", 2.0, 8.0) == pytest.approx(0.0)
+        assert normalize(8.0, "higher", 2.0, 8.0) == pytest.approx(1.0)
+
+    def test_lower_endpoints_explicit(self):
+        # lo=2, hi=8: value=8 -> 0.0; value=2 -> 1.0
+        assert normalize(8.0, "lower", 2.0, 8.0) == pytest.approx(0.0)
+        assert normalize(2.0, "lower", 2.0, 8.0) == pytest.approx(1.0)
+
+
+# ---------------------------------------------------------------------------
+# scalarize_run
+# ---------------------------------------------------------------------------
+
+class TestScalarizeRun:
+    def test_best_run_scores_1(self):
+        # Run 1 is best on latency (100 = min) and best on coverage (0.9 = max)
+        result = scalarize_run(
+            {"latency_ms": 100.0, "coverage": 0.9},
+            TWO_OBJ,
+            FOUR_RUNS_BOUNDS,
+        )
+        assert result == pytest.approx(1.0)
+
+    def test_worst_run_scores_0(self):
+        # Run with worst latency (200) and worst coverage (0.6)
+        result = scalarize_run(
+            {"latency_ms": 200.0, "coverage": 0.6},
+            TWO_OBJ,
+            FOUR_RUNS_BOUNDS,
+        )
+        assert result == pytest.approx(0.0)
+
+    def test_hand_checked_weighted_mix(self):
+        # latency=150 (mid): lower -> normalize = (200-150)/(200-100) = 0.5
+        # coverage=0.75 (mid): higher -> normalize = (0.75-0.6)/(0.9-0.6) = 0.5
+        # weights: latency=2, coverage=1 -> normalized: 2/3, 1/3
+        # score = (2/3)*0.5 + (1/3)*0.5 = 0.5
+        result = scalarize_run(
+            {"latency_ms": 150.0, "coverage": 0.75},
+            TWO_OBJ,
+            FOUR_RUNS_BOUNDS,
+        )
+        assert result == pytest.approx(0.5)
+
+    def test_asymmetric_weighted_mix(self):
+        # latency=100 (best=1.0), coverage=0.6 (worst=0.0)
+        # weights 2/3 on latency, 1/3 on coverage
+        # score = (2/3)*1.0 + (1/3)*0.0 = 2/3
+        result = scalarize_run(
+            {"latency_ms": 100.0, "coverage": 0.6},
+            TWO_OBJ,
+            FOUR_RUNS_BOUNDS,
+        )
+        assert result == pytest.approx(2.0 / 3.0)
+
+
+# ---------------------------------------------------------------------------
+# desirability_run
+# ---------------------------------------------------------------------------
+
+class TestDesirabilityRun:
+    def test_zero_on_one_objective_gives_zero(self):
+        # latency=200 is worst; direction=lower -> d_i=0 -> D=0
+        result = desirability_run(
+            {"latency_ms": 200.0, "coverage": 0.9},
+            TWO_OBJ,
+            FOUR_RUNS_BOUNDS,
+        )
+        assert result == 0.0
+
+    def test_zero_coverage_gives_zero(self):
+        # coverage=0.6 is worst; direction=higher -> d_i=0 -> D=0
+        result = desirability_run(
+            {"latency_ms": 100.0, "coverage": 0.6},
+            TWO_OBJ,
+            FOUR_RUNS_BOUNDS,
+        )
+        assert result == 0.0
+
+    def test_best_run_scores_1(self):
+        # Both objectives at best -> D = 1.0
+        result = desirability_run(
+            {"latency_ms": 100.0, "coverage": 0.9},
+            TWO_OBJ,
+            FOUR_RUNS_BOUNDS,
+        )
+        assert result == pytest.approx(1.0)
+
+    def test_two_objective_geometric_mean(self):
+        # latency=150: d_latency = 0.5  (direction=lower, lo=100, hi=200)
+        # coverage=0.75: d_coverage = 0.5  (direction=higher, lo=0.6, hi=0.9)
+        # weights: w_latency=2, w_coverage=1, w_sum=3
+        # D = exp((2*ln(0.5) + 1*ln(0.5)) / 3)
+        #   = exp(3*ln(0.5)/3) = exp(ln(0.5)) = 0.5
+        result = desirability_run(
+            {"latency_ms": 150.0, "coverage": 0.75},
+            TWO_OBJ,
+            FOUR_RUNS_BOUNDS,
+        )
+        assert result == pytest.approx(0.5)
+
+    def test_equal_weights_two_objectives(self):
+        # With equal weights: D = (d1 * d2) ** 0.5
+        objs = [
+            {"name": "a", "direction": "lower",  "weight": 1.0},
+            {"name": "b", "direction": "higher", "weight": 1.0},
+        ]
+        bounds = {"a": {"min": 0.0, "max": 10.0}, "b": {"min": 0.0, "max": 10.0}}
+        # a=2.5: d_a = (10-2.5)/10 = 0.75
+        # b=4.0: d_b = 4/10 = 0.4
+        # D = (0.75 * 0.4) ** 0.5 = 0.3 ** 0.5
+        result = desirability_run({"a": 2.5, "b": 4.0}, objs, bounds)
+        assert result == pytest.approx(math.sqrt(0.75 * 0.4))
+
+
+# ---------------------------------------------------------------------------
+# dominates
+# ---------------------------------------------------------------------------
+
+class TestDominates:
+    def test_clear_domination(self):
+        # A better on latency (lower=better) and better on coverage (higher=better)
+        a = {"latency_ms": 100.0, "coverage": 0.9}
+        b = {"latency_ms": 200.0, "coverage": 0.7}
+        assert dominates(a, b, TWO_OBJ) is True
+
+    def test_incomparable_not_dominated(self):
+        # A better on latency, worse on coverage -> neither dominates
+        a = {"latency_ms": 100.0, "coverage": 0.6}
+        b = {"latency_ms": 200.0, "coverage": 0.9}
+        assert dominates(a, b, TWO_OBJ) is False
+        assert dominates(b, a, TWO_OBJ) is False
+
+    def test_equal_on_all_not_dominated(self):
+        a = {"latency_ms": 150.0, "coverage": 0.75}
+        b = {"latency_ms": 150.0, "coverage": 0.75}
+        assert dominates(a, b, TWO_OBJ) is False
+
+    def test_better_on_one_equal_on_other(self):
+        # A strictly better on latency, equal on coverage -> A dominates B
+        a = {"latency_ms": 100.0, "coverage": 0.8}
+        b = {"latency_ms": 150.0, "coverage": 0.8}
+        assert dominates(a, b, TWO_OBJ) is True
+
+    def test_reverse_domination(self):
+        a = {"latency_ms": 200.0, "coverage": 0.6}  # worst on both
+        b = {"latency_ms": 100.0, "coverage": 0.9}  # best on both
+        assert dominates(b, a, TWO_OBJ) is True
+        assert dominates(a, b, TWO_OBJ) is False
+
+
+# ---------------------------------------------------------------------------
+# pareto_front
+# ---------------------------------------------------------------------------
+
+class TestParetoFront:
+    def test_hand_built_four_runs(self):
+        # FOUR_RUNS with TWO_OBJ (latency lower=better, coverage higher=better):
+        #
+        # Run 1: latency=100, coverage=0.9  -> best latency, best coverage -> non-dominated
+        # Run 2: latency=200, coverage=0.8  -> worst latency; dominated by Run 1 (1 wins both)
+        # Run 3: latency=150, coverage=0.6  -> coverage=0.6 worst; dominated by Run 4
+        #                                      (Run4: 120<150 AND 0.7>0.6)
+        # Run 4: latency=120, coverage=0.7  -> dominated by Run 1 (100<120 AND 0.9>0.7)
+        #
+        # Only Run 1 is non-dominated.
+        front = pareto_front(FOUR_RUNS, TWO_OBJ)
+        assert front == [1]
+
+    def test_two_incomparable_runs_both_on_front(self):
+        # A: low latency, low coverage; B: high latency, high coverage -> incomparable
+        runs = [
+            {"run_id": 10, "values": {"latency_ms": 100.0, "coverage": 0.6}},
+            {"run_id": 20, "values": {"latency_ms": 200.0, "coverage": 0.9}},
+        ]
+        front = pareto_front(runs, TWO_OBJ)
+        assert sorted(front) == [10, 20]
+
+    def test_three_runs_one_dominated(self):
+        # Run 3 dominates Run 2 (better on both)
+        runs = [
+            {"run_id": 1, "values": {"latency_ms": 100.0, "coverage": 0.6}},
+            {"run_id": 2, "values": {"latency_ms": 200.0, "coverage": 0.7}},
+            {"run_id": 3, "values": {"latency_ms": 180.0, "coverage": 0.8}},
+        ]
+        # Run 1: 100 latency / 0.6 coverage
+        # Run 2: 200 latency / 0.7 coverage  -- run 3 has better latency (180<200) AND coverage (0.8>0.7)
+        # Run 3: 180 latency / 0.8 coverage
+        # Run 1 vs 3: latency 1 wins (100<180); coverage 3 wins (0.8>0.6) -> incomparable
+        # Front: [1, 3]
+        front = pareto_front(runs, TWO_OBJ)
+        assert sorted(front) == [1, 3]
+
+    def test_all_dominated_except_one(self):
+        runs = [
+            {"run_id": 1, "values": {"latency_ms": 100.0, "coverage": 0.9}},
+            {"run_id": 2, "values": {"latency_ms": 110.0, "coverage": 0.85}},
+            {"run_id": 3, "values": {"latency_ms": 120.0, "coverage": 0.80}},
+        ]
+        # Run 1 dominates all others (strictly best latency AND coverage)
+        front = pareto_front(runs, TWO_OBJ)
+        assert front == [1]
+
+
+# ---------------------------------------------------------------------------
+# select_best
+# ---------------------------------------------------------------------------
+
+class TestSelectBest:
+    def _result_keys(self, result):
+        return set(result.keys())
+
+    def test_output_keys_present_scalarize(self):
+        result = select_best(FOUR_RUNS, TWO_OBJ, method="scalarize")
+        expected_keys = {
+            "method", "bounds", "scores", "best_run_id",
+            "best_score", "pareto_front", "best_values",
+        }
+        assert expected_keys == self._result_keys(result)
+
+    def test_output_keys_present_desirability(self):
+        result = select_best(FOUR_RUNS, TWO_OBJ, method="desirability")
+        expected_keys = {
+            "method", "bounds", "scores", "best_run_id",
+            "best_score", "pareto_front", "best_values",
+        }
+        assert expected_keys == self._result_keys(result)
+
+    def test_output_keys_present_pareto(self):
+        result = select_best(FOUR_RUNS, TWO_OBJ, method="pareto")
+        expected_keys = {
+            "method", "bounds", "scores", "best_run_id",
+            "best_score", "pareto_front", "best_values",
+        }
+        assert expected_keys == self._result_keys(result)
+
+    def test_pareto_front_always_returned(self):
+        for method in ("scalarize", "desirability", "pareto"):
+            result = select_best(FOUR_RUNS, TWO_OBJ, method=method)
+            assert "pareto_front" in result
+            assert isinstance(result["pareto_front"], list)
+
+    def test_scalarize_best_is_run1(self):
+        # Run 1 is best on both objectives -> score=1.0 -> must be selected
+        result = select_best(FOUR_RUNS, TWO_OBJ, method="scalarize")
+        assert result["best_run_id"] == 1
+        assert result["best_score"] == pytest.approx(1.0)
+        assert result["method"] == "scalarize"
+
+    def test_desirability_best_is_run1(self):
+        # Run 1: both d_i=1.0 -> D=1.0
+        result = select_best(FOUR_RUNS, TWO_OBJ, method="desirability")
+        assert result["best_run_id"] == 1
+        assert result["best_score"] == pytest.approx(1.0)
+        assert result["method"] == "desirability"
+
+    def test_pareto_best_is_run1(self):
+        result = select_best(FOUR_RUNS, TWO_OBJ, method="pareto")
+        assert result["best_run_id"] == 1
+        assert result["method"] == "pareto"
+
+    def test_scores_list_has_all_runs(self):
+        result = select_best(FOUR_RUNS, TWO_OBJ, method="scalarize")
+        run_ids_in_scores = {s["run_id"] for s in result["scores"]}
+        assert run_ids_in_scores == {1, 2, 3, 4}
+
+    def test_best_values_are_raw_measurements(self):
+        result = select_best(FOUR_RUNS, TWO_OBJ, method="scalarize")
+        assert result["best_values"] == {"latency_ms": 100.0, "coverage": 0.9}
+
+    def test_invalid_method_raises(self):
+        with pytest.raises(ValueError, match="Unknown method"):
+            select_best(FOUR_RUNS, TWO_OBJ, method="invalid")
+
+    def test_single_objective_degenerate_scalarize(self):
+        # Single objective: direction=lower -> best run is the one with min value
+        objs = [{"name": "latency_ms", "direction": "lower", "weight": 1.0}]
+        runs = [
+            {"run_id": 1, "values": {"latency_ms": 300.0}},
+            {"run_id": 2, "values": {"latency_ms": 100.0}},  # best
+            {"run_id": 3, "values": {"latency_ms": 200.0}},
+        ]
+        result = select_best(runs, objs, method="scalarize")
+        assert result["best_run_id"] == 2
+        # pareto_front should contain only the best run in a single-objective case
+        assert result["pareto_front"] == [2]
+
+    def test_single_objective_degenerate_higher(self):
+        objs = [{"name": "coverage", "direction": "higher", "weight": 1.0}]
+        runs = [
+            {"run_id": 1, "values": {"coverage": 0.7}},
+            {"run_id": 2, "values": {"coverage": 0.9}},  # best
+            {"run_id": 3, "values": {"coverage": 0.5}},
+        ]
+        result = select_best(runs, objs, method="scalarize")
+        assert result["best_run_id"] == 2
+        assert result["pareto_front"] == [2]
+
+    def test_bounds_match_compute_bounds(self):
+        result = select_best(FOUR_RUNS, TWO_OBJ, method="scalarize")
+        expected_bounds = compute_bounds(FOUR_RUNS, TWO_OBJ)
+        assert result["bounds"] == expected_bounds
+
+    def test_default_method_is_scalarize(self):
+        result = select_best(FOUR_RUNS, TWO_OBJ)
+        assert result["method"] == "scalarize"
