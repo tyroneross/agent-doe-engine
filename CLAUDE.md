@@ -1,3 +1,6 @@
+<!-- SPDX-FileCopyrightText: 2025-2026 Tyrone Ross, Jr <46267523+tyroneross@users.noreply.github.com> -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # multi-goal
 
 Multi-objective optimization via Design of Experiments. Optimize several competing metrics at once — find the factor settings that best trade off latency, cost, bundle size, coverage, etc.
@@ -14,10 +17,7 @@ Two modes, both judged purely by measured numbers (no vibes):
 - **Runtime data path**: state lives under `.multi-goal/` in the *consumer* project, never `.build-loop/` or `.claude/`. The optimization workspace is `.multi-goal/optimize/` (`experiment.json`, `doe.json`, `results.jsonl`, `effects.json`, `objectives.json`, `experiments/` archive).
 - **Dependencies**: numpy only for runtime; pytest for dev. No other packages. uv for all Python (`uv run pytest`, `uv run python scripts/...`).
 - **Host-agnostic**: the host coding agent's LLM does the reasoning (hypothesis generation, factor confirmation). Scripts provide deterministic math + structured data; the skill instructs the host LLM. Same plugin works under Claude Code, Codex, etc. No direct vendor API calls.
-- **Attribution**: every source file carries the SPDX header
-  `# SPDX-FileCopyrightText: 2025-2026 Tyrone Ross, Jr <46267523+tyroneross@users.noreply.github.com>`
-  `# SPDX-License-Identifier: Apache-2.0`
-  Markdown skill/agent files use the HTML-comment form. JSON is covered by REUSE.toml.
+- **Attribution**: every source file carries a two-line SPDX header — a `FileCopyrightText` tag (`2025-2026 Tyrone Ross, Jr` + the GitHub noreply email) and an `Apache-2.0` license tag — copied from any existing `scripts/*.py`. Python uses `#` comments; markdown uses the HTML-comment form (two separate comment lines, not one combined line — REUSE parses them per line). JSON, `.gitignore`, and `LICENSE` are covered by `REUSE.toml`. Validate with `uvx reuse lint`.
 
 ## Multi-objective contract (the new capability vs. the build-loop original)
 

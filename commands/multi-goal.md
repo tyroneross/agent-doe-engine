@@ -3,7 +3,8 @@ description: Multi-objective optimization via Design of Experiments — optimize
 argument-hint: "[target or 'latency and cost' or factor list]"
 ---
 
-<!-- SPDX-FileCopyrightText: 2025-2026 Tyrone Ross, Jr <46267523+tyroneross@users.noreply.github.com> | SPDX-License-Identifier: Apache-2.0 -->
+<!-- SPDX-FileCopyrightText: 2025-2026 Tyrone Ross, Jr <46267523+tyroneross@users.noreply.github.com> -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 
 Run the multi-goal optimizer for: $ARGUMENTS
 

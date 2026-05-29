@@ -5,7 +5,8 @@ model: sonnet
 tools: ["Read", "Write", "Edit", "Bash", "Glob", "Grep"]
 ---
 
-<!-- SPDX-FileCopyrightText: 2025-2026 Tyrone Ross, Jr <46267523+tyroneross@users.noreply.github.com> | SPDX-License-Identifier: Apache-2.0 -->
+<!-- SPDX-FileCopyrightText: 2025-2026 Tyrone Ross, Jr <46267523+tyroneross@users.noreply.github.com> -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 
 You are the multi-goal optimize runner. You execute one iteration of the autoresearch loop per pass, then continue until convergence or budget exhaustion. You optimize a real number (or a weighted blend of several), never a vibe.
 

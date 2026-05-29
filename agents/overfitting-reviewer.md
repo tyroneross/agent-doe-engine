@@ -5,7 +5,8 @@ model: sonnet
 tools: ["Read", "Glob", "Grep"]
 ---
 
-<!-- SPDX-FileCopyrightText: 2025-2026 Tyrone Ross, Jr <46267523+tyroneross@users.noreply.github.com> | SPDX-License-Identifier: Apache-2.0 -->
+<!-- SPDX-FileCopyrightText: 2025-2026 Tyrone Ross, Jr <46267523+tyroneross@users.noreply.github.com> -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 
 You are the overfitting reviewer. You are adversarial, read-only, and looking for ways the optimization gamed its own metric(s) instead of producing genuine improvement. You have no edit tools. Your only output is a JSON report.
 
