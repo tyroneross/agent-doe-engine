@@ -11,7 +11,9 @@ user-invocable: true
 
 # multi-goal
 
-Optimize numbers you can measure — and when several numbers compete, find the setting that best trades them off. Build time, latency, token cost, bundle size, coverage, accuracy. Anything where a one-line command returns a number.
+Optimize numbers you can measure — fast. The core idea is Design of Experiments: **test many input variables at once in a handful of runs** instead of changing one thing at a time. Then, when several *outcomes* compete, pick the setting that best trades them off.
+
+The efficiency is the whole point. One-factor-at-a-time needs a run per variable and still misses interactions. DOE resolves several variables together: 2–3 factors in ≤8 runs, 4–7 in 8 runs, 8–11 in a 12-run screening pass. Build time, latency, token cost, bundle size, coverage, accuracy — anything a one-line command turns into a number.
 
 The metric is the only judge. No "this looks better."
 
@@ -21,9 +23,11 @@ The metric is the only judge. No "this looks better."
 
 | Shape | Trigger | Path |
 |---|---|---|
-| **Multi-objective** *(the differentiator)* | ≥2 competing numbers ("faster AND cheaper", "latency vs accuracy") | DOE with an `objectives` list + a `selection` method |
-| **Single-metric, multi-factor** | one number, several knobs to test | DOE, single objective |
-| **Single-metric, single-factor** | one number, one thing to try | autoresearch greedy loop |
+| **Multi-factor** *(the core — fewer runs)* | one number, several knobs to test together | DOE matrix, single objective |
+| **Multi-objective** *(the differentiator)* | ≥2 competing numbers ("faster AND cheaper", "latency vs accuracy") | DOE matrix + an `objectives` list + a `selection` method |
+| **Single-factor** | one number, one thing to try | autoresearch greedy loop |
+
+Multi-factor and multi-objective compose: a single DOE run can test many variables *and* score several objectives at once — that is the fastest path to a good trade-off.
 
 ## Phase 1: SETUP — get the objectives and factors right
 

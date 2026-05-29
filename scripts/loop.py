@@ -529,7 +529,13 @@ def get_experiment_summary(workdir: Path) -> dict:
         total_iterations, kept, discarded, errors,
         baseline_value, current_best, improvement_pct,
         top_changes (list of up to 3 dicts with iteration/metric/delta/description)
+
+    When no experiment exists, returns {"active": False} so the /status command
+    can report cleanly instead of crashing.
     """
+    if not _experiment_path(workdir).exists():
+        return {"active": False}
+
     experiment = load_experiment(workdir)
     results = load_results(workdir)
 
@@ -573,6 +579,7 @@ def get_experiment_summary(workdir: Path) -> dict:
             pass
 
     return {
+        "active": True,
         "target": experiment.get("target", "unnamed"),
         "total_iterations": total,
         "kept": len(kept),

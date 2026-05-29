@@ -1,0 +1,39 @@
+{
+  "name": "multi-goal",
+  "version": "0.1.0",
+  "description": "Multi-objective optimization via Design of Experiments. Optimize several competing metrics at once (latency + cost + bundle size + coverage) — plan a DOE test matrix, measure each run, and select the best trade-off by weighted scalarization, Derringer-Suich desirability, or Pareto frontier. Falls back to a single-variable autoresearch loop. numpy-only, host-agnostic.",
+  "author": {
+    "name": "Tyrone Ross, Jr",
+    "url": "https://github.com/tyroneross"
+  },
+  "repository": "https://github.com/tyroneross/multi-goal",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/tyroneross/multi-goal#readme",
+  "keywords": [
+    "optimization",
+    "multi-objective",
+    "design-of-experiments",
+    "doe",
+    "pareto",
+    "desirability",
+    "factorial",
+    "plackett-burman",
+    "autoresearch",
+    "benchmarking",
+    "performance"
+  ],
+  "commands": "./commands",
+  "agents": "./agents",
+  "skills": "./skills",
+  "interface": {
+    "displayName": "multi-goal",
+    "shortDescription": "Multi-objective DOE optimization — best trade-off across competing metrics.",
+    "longDescription": "Test many input variables in few runs with Design of Experiments, measure every objective on every run, and pick the best trade-off across competing goals by scalarization, Derringer-Suich desirability, or Pareto frontier. Falls back to a single-variable autoresearch keep/revert loop.",
+    "developerName": "Ross Labs",
+    "category": "Coding",
+    "capabilities": [
+      "Read",
+      "Write"
+    ]
+  }
+}
