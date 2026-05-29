@@ -23,15 +23,38 @@ Most "make it faster" work optimizes one number and silently regresses another. 
 
 ## Install
 
+**As a Claude Code / Codex plugin** — add the repo as a plugin (marketplace entry or local path); the `multi-goal` skill and `/multi-goal` command then drive the flow. The host coding agent's LLM does the reasoning (hypotheses, factor confirmation); the scripts are deterministic and host-neutral.
+
+**Standalone** — the scripts run on their own:
 ```bash
-# as a Claude Code plugin (via marketplace or local path)
-# scripts run standalone too:
-uv run python scripts/doe.py detect 4
+uv run python scripts/doe.py detect 4          # which design for 4 factors
+uv run pytest -q                                # 72 tests
 ```
+Requirements: Python ≥3.10, numpy. Dev: pytest.
 
 ## Quick start
 
-See [`docs/`](docs/) for the full walkthrough and method notes. Requirements: Python ≥3.10, numpy.
+```bash
+# 1. which design for k factors
+python3 scripts/doe.py detect 2
+# 2. generate the matrix
+python3 scripts/doe.py generate --factors '[{"name":"workers","low":2,"high":8},{"name":"batch","low":16,"high":64}]' --design auto --seed 1 > doe.json
+# 3. run each row, measure every objective into results.jsonl, then:
+python3 scripts/doe.py analyze --design doe.json --results results.jsonl \
+  --objectives '{"objectives":[{"name":"latency","direction":"lower","weight":0.7},{"name":"cost","direction":"lower","weight":0.3}],"selection":"scalarize"}'
+```
+
+Full walkthrough and the method/math: [`docs/usage.md`](docs/usage.md), [`docs/method.md`](docs/method.md).
+
+## Scripts
+
+| Script | Role |
+|---|---|
+| `scripts/doe.py` | DOE matrix generation + multi-response effects analysis |
+| `scripts/objectives.py` | multi-objective core: scalarize, desirability, Pareto, baseline aggregate |
+| `scripts/loop.py` | single/few-variable autoresearch greedy loop |
+| `scripts/suggest_factors.py` | codebase scanner for factor candidates |
+| `scripts/metric_runner.py` | sampled metric / guard execution |
 
 ## License
 
