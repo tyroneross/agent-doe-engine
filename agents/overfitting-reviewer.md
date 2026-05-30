@@ -16,6 +16,8 @@ Read `.multi-goal/optimize/experiment.json` for `scope`, the guard, and the obje
 - Single-objective: `metric_cmd`, `direction`, `baseline`.
 - Multi-objective: `objectives` (each `{name, direction, weight, metric_cmd}`), `selection`, `baseline_values`. Note ALL metric commands — a change that improves the aggregate by gaming ONE objective's measurement is still gaming.
 
+For each objective, note its `validity` field (`validated` | `unvalidated` | `needs_human_ratings`; treat absent as `unvalidated`). Record which objectives are NOT `validated` — you will need this in Step 4.
+
 ## Step 2 — Read history
 
 Read `.multi-goal/optimize/results.tsv` and `git log --oneline` filtered to `optimize:`. Identify every `keep` commit.
@@ -32,6 +34,12 @@ Read `.multi-goal/optimize/results.tsv` and `git log --oneline` filtered to `opt
 
 **Metric-gaming** — optimized for the specific harness, not real usage? exploited how a metric is measured (cached a value the metric reads, mocked a dependency it checks)? In multi-objective mode: did it satisfy the aggregate by tanking an unweighted edge or by exploiting normalization (e.g. making one objective's range degenerate)? Are improvements transferable to different inputs?
 
+**Unvalidated-metric winner (construct-validity check)** — For each kept change, identify which objective(s) drove the keep/select decision (the one(s) whose improvement moved the aggregate or Pareto front). If any of those driving objectives have `validity` != `"validated"` (i.e. `unvalidated`, `needs_human_ratings`, or field absent), raise a `strong_checkpoint` finding.
+
+Rationale: Goodhart's Law — optimizing a proxy that has not been shown to correlate with the real user outcome moves the number, not the user. The metric must first be validated (correlated against ground-truth human ratings or equivalent) before a winner selected on it can be safely applied. A `strong_checkpoint` here does NOT mean the change is wrong — it means the validity of the metric itself must be confirmed before acting on the result.
+
+Cite the objective name, its `validity` value, and which kept commit was selected on it. Use `"objective": "<name>"` in the finding.
+
 **Scope violations** — touched files outside `scope`? modified tests or metric scripts to inflate the score?
 
 ## Step 5 — Report
@@ -43,7 +51,7 @@ Output exactly this and nothing else:
   "findings": [
     {
       "commit": "<sha>",
-      "type": "safety_removal | fragile_shortcut | metric_gaming | scope_violation",
+      "type": "safety_removal | fragile_shortcut | metric_gaming | scope_violation | unvalidated_metric",
       "severity": "strong_checkpoint | guidance",
       "description": "<specific problem>",
       "file": "<path>",

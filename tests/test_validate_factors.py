@@ -143,6 +143,65 @@ class NotAdjustableTests(unittest.TestCase):
             self.assertEqual(v.reason, "no_definition_site")
 
 
+class SameFileReferenceTests(unittest.TestCase):
+    """Bug-regression suite: constants defined and used in the same file.
+
+    Before the fix, count_references excluded the entire definition file, so
+    any in-file use was invisible and the constant was wrongly classified as
+    dead_constant. These tests lock in the correct behavior.
+    """
+
+    def test_defined_and_used_in_same_file_is_adjustable(self) -> None:
+        """(a) Constant defined AND used in the SAME file → adjustable."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            # Definition on line 1; usage on line 3 (same file, different line).
+            _write(
+                root, "config.py",
+                "LLM_TEMPERATURE = 0.7\n"
+                "\n"
+                "model_kwargs = {'temperature': LLM_TEMPERATURE}\n",
+            )
+            v = validate_factors.classify_candidate("LLM_TEMPERATURE", 0.7, root)
+            self.assertEqual(v.adjustability, "adjustable", msg=v.evidence)
+            self.assertEqual(v.reason, "ok")
+
+    def test_defined_in_one_file_referenced_in_another_is_adjustable(self) -> None:
+        """(b) Constant defined in one file, referenced only in another → adjustable (no regression)."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _write(root, "constants.py", "TOP_N_ARTICLES = 5\n")
+            _write(root, "feed.py", "from constants import TOP_N_ARTICLES\nresults = results[:TOP_N_ARTICLES]\n")
+            v = validate_factors.classify_candidate("TOP_N_ARTICLES", 5.0, root)
+            self.assertEqual(v.adjustability, "adjustable", msg=v.evidence)
+            self.assertEqual(v.reason, "ok")
+
+    def test_defined_but_never_referenced_anywhere_is_dead(self) -> None:
+        """(c) Constant defined and never referenced anywhere → dead_constant."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _write(root, "config.py", "MIN_VECTOR_FOR_STRICT = 3\n")
+            # No other file references it.
+            v = validate_factors.classify_candidate("MIN_VECTOR_FOR_STRICT", 3.0, root)
+            self.assertEqual(v.adjustability, "not_adjustable", msg=v.evidence)
+            self.assertEqual(v.reason, "dead_constant")
+            self.assertIn("zero references", v.evidence)
+
+    def test_only_occurrence_is_definition_line_is_dead(self) -> None:
+        """(d) Boundary: constant whose ONLY occurrence is its definition line → dead_constant.
+
+        The definition line must not count as a use — excluding it by position
+        must leave ref_count == 0.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            # The name DEFAULT_MAX_ATTEMPTS appears exactly once: on the def line.
+            _write(root, "settings.py", "DEFAULT_MAX_ATTEMPTS = 3\n")
+            v = validate_factors.classify_candidate("DEFAULT_MAX_ATTEMPTS", 3.0, root)
+            self.assertEqual(v.adjustability, "not_adjustable", msg=v.evidence)
+            self.assertEqual(v.reason, "dead_constant")
+
+
 class ByteRevertIntegrityTests(unittest.TestCase):
     """Mutation probe must restore the original bytes verbatim — including
     line endings and trailing whitespace."""

@@ -110,15 +110,28 @@ Each objective is a number plus how to read it:
 ```json
 {
   "objectives": [
-    {"name": "latency_ms",   "direction": "lower",  "weight": 0.5, "metric_cmd": "python3 bench.py --stat p95"},
-    {"name": "cost_usd",     "direction": "lower",  "weight": 0.3, "metric_cmd": "python3 cost.py"},
-    {"name": "coverage_pct", "direction": "higher", "weight": 0.2, "metric_cmd": "pytest --cov | tail -1 | grep -o '[0-9]*%'"}
+    {"name": "latency_ms",   "direction": "lower",  "weight": 0.5, "metric_cmd": "python3 bench.py --stat p95",
+     "validity": "validated"},
+    {"name": "cost_usd",     "direction": "lower",  "weight": 0.3, "metric_cmd": "python3 cost.py",
+     "validity": "validated"},
+    {"name": "coverage_pct", "direction": "higher", "weight": 0.2, "metric_cmd": "pytest --cov | tail -1 | grep -o '[0-9]*%'",
+     "validity": "unvalidated"}
   ],
   "selection": "scalarize"
 }
 ```
 
 Write it to `.multi-goal/optimize/objectives.json`. One objective is the single-metric case — everything below still works.
+
+**`validity` field** (optional; default `unvalidated` when absent):
+
+| Value | Meaning |
+|---|---|
+| `validated` | The metric has been shown to correlate with the real user outcome (e.g. correlated against ground-truth human ratings or an A/B result). A DOE winner on this metric is safe to apply. |
+| `unvalidated` | The metric is a proxy that has not yet been correlated against the real user outcome. Optimizing it moves the number; whether it moves the underlying goal is unknown. |
+| `needs_human_ratings` | Known proxy; ground-truth human ratings exist or could be collected and should be used to validate before the next DOE cycle. |
+
+Set `validity: "validated"` only when you have evidence (e.g. a correlation study, an A/B test, or a published benchmark showing the metric tracks user outcome). Leave it absent or `"unvalidated"` during early exploration. The overfitting reviewer treats any DOE or loop winner selected on an `unvalidated` or `needs_human_ratings` metric as a `strong_checkpoint` finding (Goodhart risk — see Phase 3).
 
 **Choosing `selection`:**
 

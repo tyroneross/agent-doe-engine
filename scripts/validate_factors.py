@@ -156,9 +156,17 @@ def find_definition_sites(name: str, root: Path) -> list[DefSite]:
     return sites
 
 
-def count_references(name: str, root: Path, exclude_files: set[str]) -> int:
-    """Count token-bounded occurrences of `name` in source files OTHER than the
-    definition sites. A factor with zero references is a dead constant."""
+def count_references(name: str, root: Path, exclude_positions: set[tuple[str, int]]) -> int:
+    """Count token-bounded occurrences of `name` across ALL source files,
+    excluding only the exact (file, line) positions that are definition sites.
+
+    A match on any other line — including non-definition lines in the same file
+    as a definition — counts as a reference. A factor with zero such references
+    is a dead constant.
+
+    Previously this excluded entire definition files, which caused constants
+    defined AND used in the same module to be falsely classified as dead.
+    """
     pat = _reference_pattern(name)
     count = 0
     for path in root.rglob("*"):
@@ -166,13 +174,15 @@ def count_references(name: str, root: Path, exclude_files: set[str]) -> int:
             continue
         if _is_skipped(path, root):
             continue
-        if str(path) in exclude_files:
-            continue
         try:
             text = path.read_text(encoding="utf-8", errors="ignore")
         except (OSError, UnicodeDecodeError):
             continue
-        count += len(pat.findall(text))
+        path_str = str(path)
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            if (path_str, lineno) in exclude_positions:
+                continue
+            count += len(pat.findall(line))
     return count
 
 
@@ -395,14 +405,16 @@ def classify_candidate(name: str, current_value: float, root: Path) -> Validated
     # already deterministic via sorted(rglob) above.
     primary = sites[0]
 
-    # Dead-constant check: are there any references OUTSIDE the def sites?
-    def_files = {s.file for s in sites}
-    ref_count = count_references(name, root, exclude_files=def_files)
+    # Dead-constant check: are there any references outside the definition lines?
+    # Exclude only the exact (file, line) positions of definition sites so that
+    # uses of the constant on other lines in the same file are counted.
+    def_positions = {(s.file, s.line) for s in sites}
+    ref_count = count_references(name, root, exclude_positions=def_positions)
     if ref_count == 0:
         return Validated(
             name=name, current_value=current_value,
             adjustability="not_adjustable", reason="dead_constant",
-            evidence=f"{name} has zero references outside its definition site at {Path(primary.file).name}:{primary.line}",
+            evidence=f"{name} has zero references outside its definition line(s); primary site {Path(primary.file).name}:{primary.line}",
             definition_site={"file": primary.file, "line": primary.line, "value": primary.value},
         )
 
