@@ -29,6 +29,76 @@ The metric is the only judge. No "this looks better."
 
 Multi-factor and multi-objective compose: a single DOE run can test many variables *and* score several objectives at once — that is the fastest path to a good trade-off.
 
+## Phase 0: PLAN — pick the right variables before spending runs
+
+Skip when the user already named factors **and** they're known-adjustable in this repo. Otherwise run this phase first — wrong factors burn the whole budget on noise.
+
+### 0.0 — Open a dedicated worktree (mandatory; do NOT run in main)
+
+Every multi-goal run mutates factor values across many DOE runs. Doing that in the user's primary checkout interleaves optimization writes with real work-in-progress and risks leaving the tree dirty if a run is killed. The helper handles create / reuse / cleanup:
+
+```bash
+python3 ${CLAUDE_PLUGIN_ROOT}/scripts/worktree.py \
+  --workdir "$TARGET_REPO" --target "<target name>" --json init
+```
+
+Use the printed `path` as the worktree from this point on (`cd` into it before any further multi-goal command). The branch is `multigoal/<slug>`; the worktree is `<repo-name>-multigoal-<slug>` alongside the repo. Re-running `init` is idempotent. At the end of Phase 3 Review run `worktree.py ... cleanup [--delete-branch]` to remove it.
+
+This is the default path, not an afterthought — there is no "just run in main" shortcut. The helper is stdlib-only and never reaches outside `git worktree` operations.
+
+### 0.1 — Scan for factor candidates
+
+```bash
+python3 ${CLAUDE_PLUGIN_ROOT}/scripts/suggest_factors.py \
+  --workdir "$PWD" --top 12 --json --research-levels > /tmp/mg-candidates.json
+```
+
+`--research-levels` flags high-confidence numeric knobs whose names match tuning keywords (`batch`, `timeout`, `lr`, ...) with `needs_research: true` and a `research_topic` string. The script never calls research itself — it just marks which candidates would benefit if the host has a research capability available (see §0.4).
+
+### 0.2 — Host LLM ranks and picks the candidates to test
+
+The host coding agent's LLM reads the candidate list and selects which to take forward. The script is deterministic; the choice is reasoning work. Use the AskUserQuestion path to confirm — candidates **pre-checked**, per existing convention. Surface for each: `name`, `current_value`, `suggested_levels`, `confidence`, file:line, and one-line `why`. Limit the user-facing list to the ~6 highest-signal entries; let the user add/remove.
+
+This is the canonical confirmation point — never auto-run downstream phases on heuristic candidates alone.
+
+### 0.3 — Validate adjustability (REQUIRED before DOE)
+
+For each accepted candidate, prove the optimizer can actually move it before spending DOE runs:
+
+```bash
+python3 ${CLAUDE_PLUGIN_ROOT}/scripts/validate_factors.py \
+  --workdir "$PWD" --candidates /tmp/mg-candidates.json --json --reject-non-adjustable \
+  > .multi-goal/optimize/validated_factors.json
+```
+
+The validator performs a snapshot → mutate → re-read → revert → verify cycle on each candidate's primary definition site. Output classification:
+
+| adjustability | reason | Action |
+|---|---|---|
+| `adjustable` | `ok` | enters the DOE |
+| `not_adjustable` | `dead_constant` | reject — zero references; the optimizer would change a value nothing reads |
+| `not_adjustable` | `duplicate_definition` | reject — two sites with conflicting values, which one wins is ambiguous |
+| `not_adjustable` | `mutation_failed` | reject — write didn't land (read-only FS, locked file, race with build cache) |
+| `not_adjustable` | `revert_failed` | hard-surface — working tree is dirty; **stop the run** and ask the user before continuing |
+| `not_adjustable` | `no_definition_site` | reject — name vanished since the scan |
+
+Only `adjustable` candidates enter `factors.json`. For each rejection, show the user the `reason` and `evidence` so they can fix the underlying issue (extract a duplicate to a single config, add a real reference, etc.) or override. `--reject-non-adjustable` exits 1 — surface that to the user with the rejection summary; the user decides whether to drop, fix, or override.
+
+### 0.4 — Research seam (optional, host-driven, off by default)
+
+For any validated candidate that was flagged `needs_research: true` in §0.1, the host LLM may consult its research capability (web search, Exa, Context7, internal docs — whatever the host has available) to propose best-practice levels. The reasoning is the host's; the plugin only carries the structured input/output.
+
+- **Numeric factor**: replace the heuristic `suggested_levels` ([0.5x, 1x, 2x]) with researched levels (e.g. for `BATCH_SIZE = 32` on a Transformer training loop, research may suggest `[8, 16, 32, 64]` based on published GPU memory tradeoffs).
+- **Categorical factor**: replace the levels with named variants (`{"name": "prompt_variant", "levels": ["chain-of-thought", "few-shot", "zero-shot"]}`). The DOE machinery treats them as categorical levels — useful for prompt A/B/C, tokenizer choice, model variant, scheduler family, etc.
+
+This step is **off by default**. Enable only when the user explicitly asks ("research good levels for these") OR when the candidate set is small enough (≤3 factors) that the research overhead is worth it. The host invokes its own research tool — there are **no vendor API calls inside this plugin**. Always cite the source the research returned in the `factors.json` `why` field so a future run can audit it.
+
+If the host has no research capability, skip this step silently — the heuristic levels are a working default.
+
+### 0.5 — Compose the factor file
+
+Write the validated (and optionally researched) candidates to `.multi-goal/optimize/factors.json` in the shape `[{name, low, high}]` (numeric two-level) or `[{name, levels:[...]}]` (numeric multi-level OR categorical). From here, the rest of the SETUP phase (objectives, design) proceeds as Phase 1 below.
+
 ## Phase 1: SETUP — get the objectives and factors right
 
 Wrong metric = Goodhart's Law. Wrong factors = wasted runs. This is the highest-leverage phase.
@@ -60,13 +130,9 @@ Write it to `.multi-goal/optimize/objectives.json`. One objective is the single-
 
 ### 1.2 — Identify factors
 
-If the user named factors ("optimize workers, batch_size, timeout"), validate the shape `[{name, low, high}]` or `[{name, levels:[...]}]` and skip ahead.
+If the user named factors ("optimize workers, batch_size, timeout"), validate the shape `[{name, low, high}]` or `[{name, levels:[...]}]` and run them through Phase 0.3 (adjustability validation) before skipping ahead.
 
-Otherwise scan the codebase for candidates:
-```bash
-python3 ${CLAUDE_PLUGIN_ROOT}/scripts/suggest_factors.py --workdir "$PWD" --top 12 --json
-```
-Returns ranked numeric knobs (UPPER_SNAKE constants near tuning keywords, env vars with numeric defaults) with suggested low/center/high levels. **Confirm with the user before running** (AskUserQuestion, candidates pre-checked) — the scanner has false positives (port numbers, toast delays look numeric but aren't perf knobs). Do not auto-run on heuristics.
+Otherwise the factor inventory comes from **Phase 0 (PLAN)** above: scan → host-LLM picks → adjustability validation → optional research → `.multi-goal/optimize/factors.json`. Phase 0 is the canonical path; this section is the contract for what `factors.json` must contain. Do not auto-run optimization on heuristic candidates that have not passed `validate_factors.py`.
 
 ### 1.3 — Pick the design (≥2 factors)
 
@@ -133,6 +199,12 @@ Single-objective mode is the original behavior — omit `--objectives` and use `
 1. Dispatch `overfitting-reviewer` (read-only): check for removed safety, fragile shortcuts, metric-gaming, scope violations across the kept changes.
 2. Summarize: runs, kept/reverted, per-objective improvement, the chosen trade-off.
 3. Archive: `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/loop.py --archive --workdir "$PWD"`.
+4. Worktree cleanup (Phase 0.0 counterpart). When the user has reviewed the kept changes and is ready to merge/cherry-pick or discard, remove the multigoal worktree:
+   ```bash
+   python3 ${CLAUDE_PLUGIN_ROOT}/scripts/worktree.py \
+     --workdir "$TARGET_REPO" --target "<target name>" --json cleanup [--delete-branch]
+   ```
+   Default keeps the branch (so the user can inspect / merge later); add `--delete-branch` only when the user explicitly discards the run.
 
 ## Model tiering (when running under a multi-model host)
 
