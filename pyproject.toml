@@ -10,9 +10,33 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = ["numpy>=1.24"]
 
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project.urls]
 Homepage = "https://github.com/tyroneross/multi-goal"
 Repository = "https://github.com/tyroneross/multi-goal"
+
+[project.scripts]
+multi-goal-doe = "doe:main"
+multi-goal-suggest-factors = "suggest_factors:main"
+multi-goal-validate-factors = "validate_factors:main"
+multi-goal-worktree = "worktree:main"
+
+[tool.setuptools]
+py-modules = [
+  "doe",
+  "loop",
+  "metric_runner",
+  "objectives",
+  "suggest_factors",
+  "validate_factors",
+  "worktree"
+]
+
+[tool.setuptools.package-dir]
+"" = "scripts"
 
 [dependency-groups]
 dev = ["pytest>=8.0"]
