@@ -6,3 +6,4 @@ node_modules/
 .DS_Store
 .multi-goal/
 .build-loop/
+.archive/

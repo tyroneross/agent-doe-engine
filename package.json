@@ -1,0 +1,56 @@
+{
+  "name": "@tyroneross/multi-goal",
+  "version": "0.1.0",
+  "description": "Multi-objective Design of Experiments optimizer for competing software metrics, with scalarization, desirability, Pareto selection, and plugin surfaces.",
+  "type": "commonjs",
+  "files": [
+    "agents/",
+    "commands/",
+    "docs/",
+    "scripts/*.py",
+    "skills/",
+    ".claude-plugin/",
+    ".codex-plugin/",
+    "AGENTS.md",
+    "CLAUDE.md",
+    "README.md",
+    "LICENSE",
+    "NOTICE",
+    "REUSE.toml",
+    "pyproject.toml",
+    "requirements.txt"
+  ],
+  "scripts": {
+    "test": "python -m pytest -q",
+    "pack:check": "npm pack --dry-run --registry https://registry.npmjs.org"
+  },
+  "keywords": [
+    "multi-objective",
+    "optimization",
+    "design-of-experiments",
+    "doe",
+    "pareto",
+    "desirability",
+    "software-metrics",
+    "benchmarking",
+    "plugin"
+  ],
+  "author": "Tyrone Ross, Jr <46267523+tyroneross@users.noreply.github.com>",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tyroneross/multi-goal.git"
+  },
+  "homepage": "https://github.com/tyroneross/multi-goal#readme",
+  "bugs": {
+    "url": "https://github.com/tyroneross/multi-goal/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "python": ">=3.10"
+  }
+}
