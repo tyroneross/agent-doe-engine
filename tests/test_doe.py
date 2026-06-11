@@ -18,6 +18,7 @@ Tests:
 from __future__ import annotations
 
 import json
+import math
 import subprocess
 import sys
 import tempfile
@@ -34,6 +35,7 @@ except ImportError:
 SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 import doe  # noqa: E402
+import doe_stats  # noqa: E402
 
 SCRIPT = SCRIPTS_DIR / "doe.py"
 
@@ -509,6 +511,341 @@ class MultiObjectiveAnalyzeTests(unittest.TestCase):
             self.assertIn("selection", out)
             self.assertIn("per_objective", out)
             self.assertIn("metric", out["per_objective"])
+
+
+# ---------------------------------------------------------------------------
+# Inference: SE / t / p / CI, replicate pooling, trust verdicts (new)
+# ---------------------------------------------------------------------------
+
+class InferenceTests(unittest.TestCase):
+    def test_saturated_design_no_error_df(self) -> None:
+        # 2^2 with interactions: 4 params, 4 runs → 0 residual df, df==0 verdict.
+        d = doe.full_factorial_2level(2)
+        y = 10 + 5 * d[:, 0] + 2 * d[:, 1] + 0.5 * d[:, 0] * d[:, 1]
+        e = doe.fit_effects(d, y, include_interactions=True)
+        self.assertEqual(e["error_df"], 0)
+        self.assertIn("saturated", e["inference"])
+        self.assertTrue(e["warnings"])
+        # p-values are NaN on a saturated fit
+        self.assertTrue(math.isnan(e["main_stats"][0]["p_value"]))
+
+    def test_low_power_warning_at_one_df(self) -> None:
+        # 2^2 mains-only: 3 params, 4 runs → residual_df == 1 → low-power.
+        d = doe.full_factorial_2level(2)
+        y = 10 + 5 * d[:, 0] + 2 * d[:, 1]
+        e = doe.fit_effects(d, y, include_interactions=False)
+        self.assertEqual(e["residual_df"], 1)
+        self.assertEqual(e["error_df"], 1)
+        self.assertIn("low power", e["inference"])
+
+    def test_se_ci_on_known_orthogonal_design(self) -> None:
+        # 2^3 mains-only fit. Put residual SS on terms NOT in the model: each
+        # of the three 2-way interaction columns carries coefficient 1, none of
+        # which the mains-only model can absorb (orthogonality). Each ±1 column
+        # contributes SS = sum(1^2) = 8; three of them → residual SS = 24.
+        # residual_df = n - rank = 8 - 4 = 4 → error_var = 24/4 = 6.
+        d = doe.full_factorial_2level(3)
+        y = (10 + 4 * d[:, 0]
+             + 1.0 * d[:, 0] * d[:, 1]
+             + 1.0 * d[:, 0] * d[:, 2]
+             + 1.0 * d[:, 1] * d[:, 2])
+        e = doe.fit_effects(d, y, include_interactions=False)
+        self.assertEqual(e["residual_df"], 4)
+        self.assertAlmostEqual(e["error_var"], 24.0 / 4.0, places=8)  # = 6
+        # Orthogonal design: SE_j = sqrt(error_var / n) = sqrt(6/8).
+        se_x1 = e["main_stats"][0]["se"]
+        self.assertAlmostEqual(se_x1, math.sqrt(6.0 / 8.0), places=8)
+        # t for x1 = effect/SE = 4 / sqrt(0.75)
+        self.assertAlmostEqual(e["main_stats"][0]["t"], 4.0 / math.sqrt(0.75), places=6)
+        # CI = effect ± t_crit(.975, df=4) * SE; t_crit ≈ 2.776445
+        lo, hi = e["main_stats"][0]["ci95"]
+        self.assertAlmostEqual(lo, 4.0 - 2.776445 * se_x1, places=4)
+        self.assertAlmostEqual(hi, 4.0 + 2.776445 * se_x1, places=4)
+
+    def test_replicate_pooling_uses_pure_error(self) -> None:
+        # 2^2 with 3 replicates/cell and a TRUE noise sigma → pure error df = 8.
+        d = doe.full_factorial_2level(2)
+        rng = np.random.default_rng(99)
+        cells = []
+        for i in range(4):
+            mean = 10 + 5 * d[i, 0] + 2 * d[i, 1]
+            cells.append([float(mean + rng.normal(0, 0.5)) for _ in range(3)])
+        ymeans = np.array([np.mean(c) for c in cells])
+        e = doe.fit_effects(d, ymeans, include_interactions=True, cell_values=cells)
+        self.assertEqual(e["pure_error_df"], 8)
+        self.assertEqual(e["error_source"], "pure_error")
+        self.assertEqual(e["inference"], "ok")
+        # x1 (true 5) and x2 (true 2) significant; interaction (true 0) not.
+        self.assertTrue(e["main_stats"][0]["significant"])
+        self.assertTrue(e["main_stats"][1]["significant"])
+        self.assertFalse(e["inter_stats"][(0, 1)]["significant"])
+
+    def test_replicate_se_matches_observation_level_ols(self) -> None:
+        # REGRESSION (auditor nay 2026-06-10): replicated SEs must equal the
+        # observation-level OLS SE, NOT the √r-inflated cell-level SE.
+        d = doe.full_factorial_2level(2)
+        rng = np.random.default_rng(1)
+        r = 3
+        cells = [[float(10 + 5 * d[i, 0] + 2 * d[i, 1] + rng.normal(0, 1.0))
+                  for _ in range(r)] for i in range(4)]
+        ymeans = np.array([np.mean(c) for c in cells])
+        e = doe.fit_effects(d, ymeans, include_interactions=True, cell_values=cells)
+
+        # Ground truth: expand to observation level and run full OLS by hand.
+        rows, yobs = [], []
+        for i in range(4):
+            for v in cells[i]:
+                rows.append([1, d[i, 0], d[i, 1], d[i, 0] * d[i, 1]])
+                yobs.append(v)
+        X = np.array(rows, dtype=float)
+        yo = np.array(yobs)
+        beta, _, _, _ = np.linalg.lstsq(X, yo, rcond=None)
+        resid = yo - X @ beta
+        s2 = float(resid @ resid) / (len(yo) - X.shape[1])
+        se_true = np.sqrt(s2 * np.diag(np.linalg.inv(X.T @ X)))
+        self.assertAlmostEqual(e["main_stats"][0]["se"], se_true[1], places=10)
+        self.assertAlmostEqual(e["main_stats"][1]["se"], se_true[2], places=10)
+
+    def test_unbalanced_replicates_se_correct(self) -> None:
+        # Unequal replicate counts: SE = sqrt(pure_error_var · (XᵀX)⁻¹_jj) on
+        # the OBSERVATION-level matrix. Point estimates also weight by replicate
+        # count (observation-level OLS), not the unweighted cell means.
+        d = doe.full_factorial_2level(2)
+        cells = [[10.0, 12.0, 11.0], [20.0, 22.0], [5.0, 7.0, 6.0, 8.0], [30.0]]
+        ymeans = np.array([np.mean(c) for c in cells])
+        e = doe.fit_effects(d, ymeans, include_interactions=False, cell_values=cells)
+
+        # Build the observation-level matrix and the pooled pure-error variance.
+        rows, yobs = [], []
+        for i in range(4):
+            for v in cells[i]:
+                rows.append([1, d[i, 0], d[i, 1]])
+                yobs.append(v)
+        X = np.array(rows, dtype=float)
+        yo = np.array(yobs)
+        # Point estimates: observation-level OLS.
+        beta_true, _, _, _ = np.linalg.lstsq(X, yo, rcond=None)
+        self.assertAlmostEqual(e["main"][0], beta_true[1], places=10)
+        self.assertAlmostEqual(e["main"][1], beta_true[2], places=10)
+        # SEs: pooled pure-error variance on the observation-level info matrix.
+        pe_var, pe_df = doe_stats.pooled_pure_error(cells)
+        self.assertEqual(e["error_df"], pe_df)
+        self.assertEqual(e["error_source"], "pure_error")
+        se_true = np.sqrt(pe_var * np.diag(np.linalg.inv(X.T @ X)))
+        for j in range(1, 3):
+            self.assertAlmostEqual(e["main_stats"][j - 1]["se"], se_true[j], places=10)
+
+    def test_pooled_variance_matches_hand_value(self) -> None:
+        # Pure error must equal the hand-pooled within-cell variance.
+        d = doe.full_factorial_2level(2)
+        cells = [
+            [9.0, 11.0],     # mean 10, SS 2, df 1
+            [14.0, 16.0],    # mean 15, SS 2, df 1
+            [4.0, 6.0],      # mean 5,  SS 2, df 1
+            [19.0, 21.0],    # mean 20, SS 2, df 1
+        ]
+        ymeans = np.array([np.mean(c) for c in cells])
+        e = doe.fit_effects(d, ymeans, include_interactions=True, cell_values=cells)
+        # pooled SS = 8, pooled df = 4 → pooled var = 2
+        self.assertEqual(e["pure_error_df"], 4)
+        self.assertAlmostEqual(e["error_var"], 2.0, places=10)
+
+    def test_backward_compatible_call_still_works(self) -> None:
+        d = doe.full_factorial_2level(3)
+        y = 10 + 5 * d[:, 0]
+        e = doe.fit_effects(d, y)  # legacy 2-arg call
+        self.assertIn("main", e)
+        self.assertIn("inference", e)  # now also carries inference
+
+
+# ---------------------------------------------------------------------------
+# Alias / resolution structure (new)
+# ---------------------------------------------------------------------------
+
+class AliasStructureTests(unittest.TestCase):
+    def test_full_factorial_no_aliasing(self) -> None:
+        d = doe.full_factorial_2level(3)
+        a = doe.alias_structure(d, ["x1", "x2", "x3"])
+        self.assertFalse(a["aliasing"])
+        self.assertEqual(a["resolution"], "Full")
+        self.assertIn("no aliasing", a["note"])
+        self.assertEqual(a["alias_chains"], [])
+
+    def test_res3_2_5_2_defining_relation_and_chains(self) -> None:
+        # 2^(5-2): a b c ab ac → D=AB, E=AC → I = ABD = ACE = BCDE, Res III.
+        d = doe.fracfact("a b c ab ac")
+        a = doe.alias_structure(d, ["A", "B", "C", "D", "E"])
+        self.assertEqual(a["resolution"], "III")
+        self.assertEqual(a["resolution_int"], 3)
+        rel = a["defining_relation"][0]
+        self.assertIn("A·B·D", rel)
+        self.assertIn("A·C·E", rel)
+        self.assertIn("B·C·D·E", rel)
+        # The chain containing main A must include its 2-way aliases BD and CE.
+        a_chain = next(c for c in a["alias_chains"] if c[0] == "A")
+        self.assertIn("B·D", a_chain)
+        self.assertIn("C·E", a_chain)
+
+    def test_res4_2_4_1(self) -> None:
+        # 2^(4-1): a b c abc → D=ABC → I = ABCD, Res IV.
+        d = doe.fracfact("a b c abc")
+        a = doe.alias_structure(d, ["A", "B", "C", "D"])
+        self.assertEqual(a["resolution"], "IV")
+        self.assertIn("A·B·C·D", a["defining_relation"][0])
+        # Mains are clear; 2-ways are aliased in pairs.
+        for chain in a["alias_chains"]:
+            self.assertTrue(all(len(term.split("·")) == 2 for term in chain))
+
+    def test_pb12_non_regular(self) -> None:
+        d, _ = doe.build_design(8, "pb")
+        a = doe.alias_structure(d)
+        self.assertTrue(a["aliasing"])
+        self.assertIn("Non-regular", a["note"])
+
+
+# ---------------------------------------------------------------------------
+# Regression of the user's own under-powered study (the trust-signal proof)
+# ---------------------------------------------------------------------------
+
+class UserStudyRegressionTests(unittest.TestCase):
+    """The 8-run/3-factor study that previously reported a bare r²≈0.94 must now
+    surface residual_df==1 and a LOW-POWER warning — proving the trust signals
+    stop over-trusting a high r² on an under-powered design."""
+
+    def test_study_reports_low_power(self) -> None:
+        factors = [
+            {"name": "tier", "low": "sonnet", "high": "opus"},
+            {"name": "plan_first", "low": False, "high": True},
+            {"name": "self_verify", "low": False, "high": True},
+        ]
+        values = [20, 20, 19, 17, 20, 20, 20, 20]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            r = subprocess.run(
+                [sys.executable, str(SCRIPT), "generate",
+                 "--factors", json.dumps(factors), "--design", "full", "--seed", "0"],
+                capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(r.returncode, 0, r.stderr)
+            (tmp / "design.json").write_text(r.stdout)
+            with (tmp / "results.jsonl").open("w") as f:
+                for i, v in enumerate(values):
+                    f.write(json.dumps({"run_id": i, "value": v}) + "\n")
+            r2 = subprocess.run(
+                [sys.executable, str(SCRIPT), "analyze",
+                 "--design", str(tmp / "design.json"),
+                 "--results", str(tmp / "results.jsonl"),
+                 "--direction", "higher"],
+                capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(r2.returncode, 0, r2.stderr)
+            out = json.loads(r2.stdout)
+            self.assertEqual(out["summary"]["residual_df"], 1)
+            self.assertEqual(out["summary"]["error_source"], "residual")
+            self.assertIn("low power", out["summary"]["inference"])
+            self.assertTrue(any("Low power" in w for w in out["warnings"]))
+            # The previously-trusted r² is still reported but now flanked by the
+            # trust signal; the top effect must NOT be flagged significant.
+            self.assertIsNotNone(out["summary"]["r2"])
+            top = out["ranked_effects"][0]
+            self.assertFalse(top["significant"])
+
+
+class ReplicateCliTests(unittest.TestCase):
+    def test_replicated_rows_pool_to_pure_error(self) -> None:
+        factors = [{"name": "x1", "low": -1, "high": 1},
+                   {"name": "x2", "low": -1, "high": 1}]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            r = subprocess.run(
+                [sys.executable, str(SCRIPT), "generate",
+                 "--factors", json.dumps(factors), "--design", "full", "--seed", "0"],
+                capture_output=True, text=True, timeout=10,
+            )
+            (tmp / "design.json").write_text(r.stdout)
+            matrix = np.array(json.loads(r.stdout)["matrix"])
+            rng = np.random.default_rng(5)
+            with (tmp / "results.jsonl").open("w") as f:
+                for i in range(4):
+                    mean = 10 + 5 * matrix[i, 0] + 2 * matrix[i, 1]
+                    for _ in range(3):  # 3 replicates per cell
+                        f.write(json.dumps({
+                            "run_id": i, "value": float(mean + rng.normal(0, 0.4))
+                        }) + "\n")
+            r2 = subprocess.run(
+                [sys.executable, str(SCRIPT), "analyze",
+                 "--design", str(tmp / "design.json"),
+                 "--results", str(tmp / "results.jsonl"),
+                 "--direction", "higher"],
+                capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(r2.returncode, 0, r2.stderr)
+            out = json.loads(r2.stdout)
+            self.assertEqual(out["summary"]["n_observations"], 12)
+            self.assertEqual(out["summary"]["n_replicated_cells"], 4)
+            self.assertEqual(out["summary"]["error_source"], "pure_error")
+            self.assertEqual(out["summary"]["pure_error_df"], 8)
+            self.assertEqual(out["summary"]["inference"], "ok")
+
+    def test_non_finite_value_rejected(self) -> None:
+        # REGRESSION (auditor 2026-06-10): NaN/Infinity in results must fail
+        # loudly, not silently contaminate the means/inference.
+        factors = [{"name": "x1", "low": 0, "high": 1},
+                   {"name": "x2", "low": 0, "high": 1}]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            r = subprocess.run(
+                [sys.executable, str(SCRIPT), "generate",
+                 "--factors", json.dumps(factors), "--design", "full", "--seed", "0"],
+                capture_output=True, text=True, timeout=10,
+            )
+            (tmp / "design.json").write_text(r.stdout)
+            # Write a results file with a NaN (json emits NaN literally).
+            with (tmp / "results.jsonl").open("w") as f:
+                f.write(json.dumps({"run_id": 0, "value": 1.0}) + "\n")
+                f.write('{"run_id": 1, "value": NaN}\n')
+                f.write(json.dumps({"run_id": 2, "value": 3.0}) + "\n")
+                f.write(json.dumps({"run_id": 3, "value": 4.0}) + "\n")
+            r2 = subprocess.run(
+                [sys.executable, str(SCRIPT), "analyze",
+                 "--design", str(tmp / "design.json"),
+                 "--results", str(tmp / "results.jsonl")],
+                capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(r2.returncode, 2)
+            self.assertIn("non-finite", r2.stderr)
+
+    def test_analyze_emits_aliasing_block(self) -> None:
+        # Fractional design → analyze output must carry the alias structure.
+        factors = [{"name": f"f{i}", "low": 0, "high": 1} for i in range(5)]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            r = subprocess.run(
+                [sys.executable, str(SCRIPT), "generate",
+                 "--factors", json.dumps(factors), "--design", "fractional", "--seed", "0"],
+                capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(r.returncode, 0, r.stderr)
+            design = json.loads(r.stdout)
+            self.assertIn("aliasing", design)  # generate emits it too
+            self.assertEqual(design["aliasing"]["resolution"], "III")
+            (tmp / "design.json").write_text(r.stdout)
+            matrix = np.array(design["matrix"])
+            y = 50 + 4 * matrix[:, 0]
+            with (tmp / "results.jsonl").open("w") as f:
+                for i in range(len(y)):
+                    f.write(json.dumps({"run_id": i, "value": float(y[i])}) + "\n")
+            r2 = subprocess.run(
+                [sys.executable, str(SCRIPT), "analyze",
+                 "--design", str(tmp / "design.json"),
+                 "--results", str(tmp / "results.jsonl")],
+                capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(r2.returncode, 0, r2.stderr)
+            out = json.loads(r2.stdout)
+            self.assertIn("aliasing", out)
+            self.assertEqual(out["aliasing"]["resolution"], "III")
+            self.assertTrue(out["aliasing"]["alias_chains"])
 
 
 if __name__ == "__main__":

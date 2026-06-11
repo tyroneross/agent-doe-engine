@@ -39,12 +39,14 @@ from __future__ import annotations
 import argparse
 import itertools
 import json
+import math
 import sys
 from pathlib import Path
 
 # Robust import of objectives.py regardless of CWD
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import objectives  # noqa: E402
+import doe_stats  # noqa: E402
 
 try:
     import numpy as np
@@ -140,13 +142,185 @@ def build_design(k: int, design_type: str) -> tuple[np.ndarray, str]:
 
 
 # ---------------------------------------------------------------------------
+# Alias / confounding structure
+# ---------------------------------------------------------------------------
+
+def _term_label(term: tuple[int, ...], factor_names: list[str] | None) -> str:
+    """Human label for an effect term given as a tuple of factor indices.
+    () → 'I' (the identity / grand mean column)."""
+    if not term:
+        return "I"
+    if factor_names is not None:
+        return "·".join(factor_names[i] for i in term)
+    # Letter coding A, B, C, … when no names supplied.
+    return "".join(chr(ord("A") + i) for i in term)
+
+
+def alias_structure(design: np.ndarray, factor_names: list[str] | None = None,
+                    max_order: int = 2) -> dict:
+    """Compute the confounding structure of a 2-level design empirically.
+
+    Two effects are aliased iff their ±1 model columns are identical up to
+    sign — that is the operational definition of confounding, independent of
+    how the design was generated. We enumerate the grand mean, all main
+    effects, and all interactions up to `max_order`, group terms whose columns
+    coincide, and read the resolution off the shortest defining-relation word.
+
+    Returns:
+      {
+        "resolution": "III" | "IV" | "V" | "Full" | "None",
+        "resolution_int": int | None,
+        "defining_relation": ["I = ABD = ACE = BCDE", ...] as a list of words,
+        "alias_chains": [["A", "BD", ...], ...],   # each chain = confounded set
+        "aliasing": bool,
+        "note": str,
+      }
+
+    For a full factorial (no two enumerated effects share a column) the result
+    states "no aliasing (full factorial)".
+    """
+    n, k = design.shape
+
+    def column(term: tuple[int, ...]) -> np.ndarray:
+        col = np.ones(n)
+        for idx in term:
+            col = col * design[:, idx]
+        return col
+
+    def canon_key(col: np.ndarray) -> tuple:
+        """Canonical key for a column up to sign (first nonzero entry → +)."""
+        sign = 1.0
+        for v in col:
+            if v != 0:
+                sign = 1.0 if v > 0 else -1.0
+                break
+        return tuple(np.round(col * sign, 9))
+
+    identity_col = tuple(np.round(np.ones(n), 9))
+
+    # --- Defining relation: search ALL orders for words equal to the I column.
+    # A regular fractional design's identity words can be any length up to k,
+    # so we must enumerate every subset to recover the full generating set.
+    defining_words: list[tuple[int, ...]] = []
+    for order in range(1, k + 1):
+        for combo in itertools.combinations(range(k), order):
+            if canon_key(column(combo)) == identity_col:
+                defining_words.append(combo)
+    defining_words.sort(key=lambda t: (len(t), t))
+
+    # --- Alias chains among the readable effects (mains + ≤max_order inter).
+    readable_terms: list[tuple[int, ...]] = []
+    for order in range(1, min(max_order, k) + 1):
+        readable_terms.extend(itertools.combinations(range(k), order))
+
+    groups: dict[tuple, list[tuple[int, ...]]] = {}
+    for term in readable_terms:
+        groups.setdefault(canon_key(column(term)), []).append(term)
+
+    alias_chains: list[list[str]] = []
+    for canon, members in groups.items():
+        if canon == identity_col:
+            continue
+        if len(members) > 1:
+            chain = sorted(members, key=lambda t: (len(t), t))
+            alias_chains.append([_term_label(t, factor_names) for t in chain])
+    alias_chains.sort(key=lambda c: (len(c[0]) if c else 0, c))
+
+    # A design is non-regular (e.g. Plackett-Burman) when its columns are
+    # orthogonal yet no exact ±1 alias group / identity word exists — its
+    # confounding is fractional (partial), not full. Detect via off-diagonal
+    # correlation between a main effect and any 2-way interaction column.
+    partial_alias = False
+    if not defining_words and not alias_chains and k >= 3:
+        main_cols = [design[:, i] for i in range(k)]
+        for i, j in itertools.combinations(range(k), 2):
+            inter = design[:, i] * design[:, j]
+            for m, mc in enumerate(main_cols):
+                if m in (i, j):
+                    continue
+                if abs(float(mc @ inter)) > 1e-9:
+                    partial_alias = True
+                    break
+            if partial_alias:
+                break
+
+    aliasing = bool(defining_words) or bool(alias_chains) or partial_alias
+
+    if not aliasing:
+        return {
+            "resolution": "Full",
+            "resolution_int": None,
+            "defining_relation": ["I"],
+            "alias_chains": [],
+            "aliasing": False,
+            "note": "no aliasing (full factorial)",
+        }
+
+    if partial_alias and not defining_words and not alias_chains:
+        return {
+            "resolution": "III*",
+            "resolution_int": 3,
+            "defining_relation": ["I (non-regular — no clean defining relation)"],
+            "alias_chains": [],
+            "aliasing": True,
+            "note": (
+                "Non-regular design (Plackett-Burman): orthogonal main effects, "
+                "but each main is PARTIALLY aliased with many two-way "
+                "interactions. Use for main-effects screening only; do not "
+                "interpret interactions."
+            ),
+        }
+
+    # Resolution = length of the shortest defining-relation word.
+    roman = {3: "III", 4: "IV", 5: "V", 6: "VI", 7: "VII"}
+    if defining_words:
+        res_int = min(len(w) for w in defining_words)
+        resolution = roman.get(res_int, str(res_int))
+        relation = "I = " + " = ".join(
+            _term_label(w, factor_names) for w in defining_words
+        )
+    else:
+        # Alias chains exist but no exact identity word recovered: report the
+        # confounding without claiming a resolution number.
+        res_int = None
+        resolution = "Aliased"
+        relation = "I"
+
+    if res_int == 3:
+        note = ("Resolution III: main effects are confounded with two-way "
+                "interactions; interpret each aliased chain together, not as "
+                "an isolated main effect.")
+    elif res_int == 4:
+        note = ("Resolution IV: main effects are clear of two-way interactions, "
+                "but two-way interactions are confounded with each other.")
+    elif res_int is not None and res_int >= 5:
+        note = (f"Resolution {resolution}: main effects and two-way "
+                "interactions are clear of each other.")
+    else:
+        note = ("Effects are aliased; see alias_chains. No clean defining "
+                "relation recovered — interpret confounded terms together.")
+
+    return {
+        "resolution": resolution,
+        "resolution_int": res_int,
+        "defining_relation": [relation],
+        "alias_chains": alias_chains,
+        "aliasing": True,
+        "note": note,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Effects analyzer
 # ---------------------------------------------------------------------------
 
-def fit_effects(design: np.ndarray, y: np.ndarray, include_interactions: bool = True
-                ) -> dict:
-    """Fit y ~ intercept + main + (optional) 2-way interactions via OLS.
-    Returns ranked dict with intercept, main effects, and interactions."""
+def _design_matrix(design: np.ndarray, include_interactions: bool
+                   ) -> tuple[np.ndarray, list]:
+    """Build the OLS design matrix X and its term labels.
+
+    labels[0] == "intercept"; the rest are ("main", i) or ("inter", (i, j)).
+    Truncates to a solvable column count when the model is over-parameterized.
+    """
     n, k = design.shape
     cols = [np.ones(n)]
     labels: list = ["intercept"]
@@ -160,49 +334,209 @@ def fit_effects(design: np.ndarray, y: np.ndarray, include_interactions: bool = 
                 labels.append(("inter", (i, j)))
     X = np.column_stack(cols)
     if X.shape[1] > X.shape[0]:
-        # Underdetermined; truncate to what we can solve
         X = X[:, : X.shape[0]]
         labels = labels[: X.shape[0]]
-    beta, residuals, rank, _ = np.linalg.lstsq(X, y, rcond=None)
+    return X, labels
+
+
+def _inference_verdict(error_df: int) -> tuple[str, list[str]]:
+    """Map error degrees of freedom → a plain-language trust verdict + warnings.
+
+    The verdict tells consumers whether the p-values are estimates they can
+    trust, directional-only, or absent (exact fit). It is the headline trust
+    signal that stops over-reading effect magnitude on a saturated design.
+    """
+    warnings: list[str] = []
+    if error_df <= 0:
+        verdict = "saturated — no error df; effects are exact fits, not estimates"
+        warnings.append(
+            "Saturated design: 0 error degrees of freedom. Standard errors, "
+            "t-statistics, and p-values cannot be computed. Effect magnitudes "
+            "are exact fits to the data, not statistical estimates — add "
+            "replicates or drop terms to obtain an error estimate."
+        )
+    elif error_df <= 3:
+        verdict = f"low power — only {error_df} error df; directional only"
+        warnings.append(
+            f"Low power: only {error_df} error degrees of freedom. p-values are "
+            "unstable; treat significance as directional, not conclusive. Add "
+            "replicates to strengthen the error estimate."
+        )
+    else:
+        verdict = "ok"
+    return verdict, warnings
+
+
+def fit_effects(design: np.ndarray, y: np.ndarray, include_interactions: bool = True,
+                cell_values: list[list[float]] | None = None) -> dict:
+    """Fit y ~ intercept + main + (optional) 2-way interactions via OLS, with
+    per-effect statistical inference.
+
+    Args:
+      design: ±1 coded design matrix, shape (n_cells, k).
+      y:      per-cell response (the cell MEAN when replicated), length n_cells.
+      cell_values: optional list aligned to design rows; cell_values[i] is the
+        list of replicate measurements at cell i. When any cell has ≥2
+        replicates the error term is the pooled within-cell "pure error"
+        (the statistically correct denominator for a stochastic response).
+        When None or no cell is replicated, the error term is the OLS residual.
+
+    Returns a dict carrying per-effect statistics (SE, t, p, 95% CI) keyed the
+    same way as the legacy `main`/`interactions` point estimates, plus
+    `residual_df`, `pure_error_df`, `error_var`, `inference`, and `warnings`.
+    Backward compatible: callers passing only (design, y) keep working and now
+    additionally receive inference based on the residual error term.
+    """
+    n, k = design.shape
+    X, labels = _design_matrix(design, include_interactions)
+    p_terms = X.shape[1]
+
+    # Pure-error term (independent of the model) when cells are replicated.
+    pure_error_var, pure_error_df = (0.0, 0)
+    replicate_counts: list[int] | None = None
+    if cell_values is not None:
+        pure_error_var, pure_error_df = doe_stats.pooled_pure_error(cell_values)
+        replicate_counts = [len(c) for c in cell_values]
+
+    # When replicated, fit at OBSERVATION level so the point estimates and the
+    # (XᵀX)⁻¹ used for standard errors come from one coherent OLS. For balanced
+    # / orthogonal designs this is identical to the cell-mean fit; for
+    # UNBALANCED replication it is the correct weighting (more replicates →
+    # more influence). Unreplicated input fits the cell-level matrix as before.
+    if pure_error_df > 0 and replicate_counts is not None:
+        X_fit = np.repeat(X, replicate_counts, axis=0)
+        y_fit = np.concatenate([np.asarray(c, dtype=float) for c in cell_values])
+    else:
+        X_fit, y_fit = X, y
+
+    beta, _resid, rank, _ = np.linalg.lstsq(X_fit, y_fit, rcond=None)
+    rank = int(rank)
+
     intercept = float(beta[0])
     main_effects = {labels[i][1]: float(beta[i]) for i in range(1, len(labels))
                     if labels[i][0] == "main"}
     inter_effects = {labels[i][1]: float(beta[i]) for i in range(1, len(labels))
                      if labels[i][0] == "inter"}
-    # Variance explained: total ss minus residual ss
-    y_var = float(np.var(y) * n)
-    if rank == X.shape[1] and len(residuals) > 0:
-        residual_ss = float(residuals[0])
-        r2 = 1.0 - residual_ss / y_var if y_var > 0 else 1.0
+
+    # ---- Error term selection -------------------------------------------
+    # Residual from the (observation-level when replicated) model fit.
+    fitted = X_fit @ beta
+    residual_ss = float(np.sum((y_fit - fitted) ** 2))
+    residual_df = int(X_fit.shape[0] - rank)
+
+    if pure_error_df > 0:
+        # Replicated design: pooled within-cell pure error is the correct,
+        # model-independent denominator for a stochastic response.
+        error_var = pure_error_var
+        error_df = pure_error_df
+        error_source = "pure_error"
+    elif residual_df > 0:
+        error_var = residual_ss / residual_df
+        error_df = residual_df
+        error_source = "residual"
     else:
-        r2 = None  # saturated, no degrees of freedom for residual
+        # Saturated: no error df at all.
+        error_var = 0.0
+        error_df = 0
+        error_source = "none"
+
+    # ---- Variance explained (r²), reported at the observation level ------
+    y_var = float(np.sum((y_fit - y_fit.mean()) ** 2))
+    if y_var <= 0:
+        r2 = 1.0
+    elif rank == p_terms:
+        r2 = 1.0 - residual_ss / y_var
+    else:
+        r2 = None
+
+    # ---- Per-coefficient inference --------------------------------------
+    verdict, warnings = _inference_verdict(error_df)
+    if error_df <= 0 and pure_error_df == 0 and cell_values is not None:
+        warnings.append(
+            "No replicated cells found: error estimate falls back to OLS "
+            "residual. For a stochastic/LLM response, add replicate runs so "
+            "significance rests on measured pure error, not model residual."
+        )
+
+    if error_df > 0:
+        # SE_j = sqrt(error_var · (XᵀX)⁻¹_jj) on the SAME (observation-level
+        # when replicated) matrix the coefficients were fit on, so SEs are
+        # correct for balanced AND unbalanced replication.
+        ses = doe_stats.coef_standard_errors(X_fit, error_var)
+        t_crit = doe_stats.t_ppf(0.975, error_df)
+    else:
+        ses = np.full(p_terms, float("nan"))
+        t_crit = float("nan")
+
+    def _stat(idx: int) -> dict:
+        coef = float(beta[idx])
+        se = float(ses[idx])
+        if error_df > 0 and se > 0:
+            t = coef / se
+            p = float(doe_stats.t_sf_two_sided(t, error_df))
+            ci = [coef - t_crit * se, coef + t_crit * se]
+            significant = p < 0.05
+        else:
+            t = p = float("nan")
+            ci = [float("nan"), float("nan")]
+            significant = None
+        return {"se": se, "t": t, "p_value": p, "ci95": ci,
+                "significant": significant}
+
+    intercept_stats = _stat(0)
+    main_stats = {labels[i][1]: _stat(i) for i in range(1, len(labels))
+                  if labels[i][0] == "main"}
+    inter_stats = {labels[i][1]: _stat(i) for i in range(1, len(labels))
+                   if labels[i][0] == "inter"}
+
     return {
         "intercept": intercept,
         "main": main_effects,
         "interactions": inter_effects,
+        "intercept_stats": intercept_stats,
+        "main_stats": main_stats,
+        "inter_stats": inter_stats,
         "r2": r2,
         "n_runs": n,
         "n_factors": k,
+        "residual_df": residual_df,
+        "pure_error_df": pure_error_df,
+        "error_df": error_df,
+        "error_var": error_var,
+        "error_source": error_source,
+        "inference": verdict,
+        "warnings": warnings,
     }
 
 
 def rank_findings(effects: dict, factor_names: list[str]) -> list[dict]:
-    """Sort effects by absolute magnitude with human-readable labels."""
+    """Sort effects by absolute magnitude with human-readable labels.
+
+    Each row now carries the per-effect trust signals (se, t, p_value, ci95,
+    significant) so a consumer ranking by magnitude can still see whether the
+    top effect is statistically distinguishable from noise.
+    """
+    main_stats = effects.get("main_stats", {})
+    inter_stats = effects.get("inter_stats", {})
     rows = []
     for idx, val in effects["main"].items():
-        rows.append({
+        row = {
             "term": factor_names[idx],
             "kind": "main",
             "effect": val,
             "abs_effect": abs(val),
-        })
+        }
+        row.update(main_stats.get(idx, {}))
+        rows.append(row)
     for (i, j), val in effects["interactions"].items():
-        rows.append({
+        row = {
             "term": f"{factor_names[i]} × {factor_names[j]}",
             "kind": "interaction",
             "effect": val,
             "abs_effect": abs(val),
-        })
+        }
+        row.update(inter_stats.get((i, j), {}))
+        rows.append(row)
     rows.sort(key=lambda r: -r["abs_effect"])
     return rows
 
@@ -253,12 +587,14 @@ def cmd_generate(args: argparse.Namespace) -> int:
     rng = np.random.default_rng(args.seed)
     order = list(range(len(runs)))
     rng.shuffle(order)
+    aliasing = alias_structure(matrix, factor_names=[f["name"] for f in factors])
     output = {
         "design": {"type": design_type, "name": name, "n_runs": len(runs), "n_factors": k},
         "factors": [{"name": f["name"]} for f in factors],
         "matrix": matrix.tolist(),
         "run_order": order,
         "runs": runs,
+        "aliasing": aliasing,
     }
     print(json.dumps(output, indent=2))
     return 0
@@ -299,6 +635,87 @@ def _load_objectives_arg(arg_objectives: str | None, arg_selection: str | None
     return obj_list, selection
 
 
+def _collect_single_metric(lines: list[str], n: int
+                           ) -> tuple[np.ndarray, list[list[float]], int]:
+    """Parse legacy {run_id, value} JSONL, grouping replicates by run_id.
+
+    Multiple rows with the same run_id are replicate measurements of the same
+    design cell. Returns:
+      y            — per-cell mean response, length n (used for effect fitting)
+      cell_values  — cell_values[i] = list of replicate values at run i
+      total_obs    — total number of result rows seen
+
+    Requires that every run_id in [0, n) is observed at least once.
+    """
+    cells: dict[int, list[float]] = {i: [] for i in range(n)}
+    total_obs = 0
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        row = json.loads(line)
+        rid = int(row["run_id"])
+        if rid not in cells:
+            raise ValueError(f"run_id {rid} out of range [0,{n})")
+        val = float(row["value"])
+        if not math.isfinite(val):
+            raise ValueError(f"run_id {rid}: non-finite value {val!r}")
+        cells[rid].append(val)
+        total_obs += 1
+    missing = [i for i in range(n) if not cells[i]]
+    if missing:
+        raise ValueError(f"no results for run_id(s) {missing}")
+    cell_values = [cells[i] for i in range(n)]
+    y = np.array([float(np.mean(cells[i])) for i in range(n)])
+    return y, cell_values, total_obs
+
+
+def _collect_multi_metric(rows: list[dict], obj_names: list[str], n: int
+                          ) -> tuple[dict[str, np.ndarray], dict[str, list[list[float]]],
+                                     dict[int, dict], int]:
+    """Group multi-objective result rows by run_id, supporting replicates.
+
+    Returns per-objective (y_mean vector, cell_values), a representative row per
+    run_id (cell-mean values, for selection), and the total observation count.
+    """
+    cells: dict[int, list[dict]] = {i: [] for i in range(n)}
+    total_obs = 0
+    for row in rows:
+        rid = int(row["run_id"])
+        if rid not in cells:
+            raise ValueError(f"run_id {rid} out of range [0,{n})")
+        cells[rid].append(row)
+        total_obs += 1
+    missing = [i for i in range(n) if not cells[i]]
+    if missing:
+        raise ValueError(f"no results for run_id(s) {missing}")
+
+    def _finite(v: float, rid: int, name: str) -> float:
+        fv = float(v)
+        if not math.isfinite(fv):
+            raise ValueError(f"run_id {rid}, objective '{name}': non-finite value {fv!r}")
+        return fv
+
+    y_by_obj: dict[str, np.ndarray] = {}
+    cellvals_by_obj: dict[str, list[list[float]]] = {}
+    for name in obj_names:
+        per_cell_vals = [
+            [_finite(r["values"][name], i, name) for r in cells[i]] for i in range(n)
+        ]
+        cellvals_by_obj[name] = per_cell_vals
+        y_by_obj[name] = np.array([float(np.mean(v)) for v in per_cell_vals])
+
+    # Representative (cell-mean) row per run_id for objectives.select_best.
+    mean_rows: dict[int, dict] = {}
+    for i in range(n):
+        mean_rows[i] = {
+            "run_id": i,
+            "values": {name: float(np.mean([float(r["values"][name]) for r in cells[i]]))
+                       for name in obj_names},
+        }
+    return y_by_obj, cellvals_by_obj, mean_rows, total_obs
+
+
 def cmd_analyze(args: argparse.Namespace) -> int:
     design_data = json.loads(Path(args.design).read_text())
     matrix = np.array(design_data["matrix"], dtype=float)
@@ -319,20 +736,20 @@ def cmd_analyze(args: argparse.Namespace) -> int:
         sys.stderr.write(f"--objectives parse error: {exc}\n")
         return 2
 
+    aliasing = alias_structure(matrix, factor_names=factor_names)
+
     if obj_list is None:
-        # ---- Backward-compatible single-metric path (UNCHANGED) --------
-        results: dict[int, float] = {}
-        for line in Path(args.results).read_text().splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            row = json.loads(line)
-            results[int(row["run_id"])] = float(row["value"])
-        if len(results) != n:
-            sys.stderr.write(f"need {n} results, got {len(results)}\n")
+        # ---- Backward-compatible single-metric path (now replicate-aware) ---
+        try:
+            y, cell_values, total_obs = _collect_single_metric(
+                Path(args.results).read_text().splitlines(), n
+            )
+        except (ValueError, KeyError) as exc:
+            sys.stderr.write(f"results parse error: {exc}\n")
             return 2
-        y = np.array([results[i] for i in range(n)])
-        effects = fit_effects(matrix, y, include_interactions=include_interactions)
+        n_replicated = sum(1 for c in cell_values if len(c) > 1)
+        effects = fit_effects(matrix, y, include_interactions=include_interactions,
+                              cell_values=cell_values)
         findings = rank_findings(effects, factor_names)
         direction = args.direction or "lower"
         best_run_idx = int(np.argmin(y)) if direction == "lower" else int(np.argmax(y))
@@ -347,12 +764,22 @@ def cmd_analyze(args: argparse.Namespace) -> int:
                 "design_type": design_data["design"]["type"],
                 "n_runs": n,
                 "n_factors": k,
+                "n_observations": total_obs,
+                "n_replicated_cells": n_replicated,
                 "r2": effects["r2"],
                 "intercept": effects["intercept"],
+                "intercept_stats": effects["intercept_stats"],
+                "residual_df": effects["residual_df"],
+                "pure_error_df": effects["pure_error_df"],
+                "error_df": effects["error_df"],
+                "error_source": effects["error_source"],
+                "inference": effects["inference"],
             },
+            "warnings": effects["warnings"],
+            "aliasing": aliasing,
             "ranked_effects": findings,
             "best_run": best_run_idx,
-            "best_value": float(np.min(y)) if direction == "lower" else float(np.max(y)),
+            "best_value": float(y[best_run_idx]),
             "direction": direction,
         }
         if best_factors is not None:
@@ -383,36 +810,44 @@ def cmd_analyze(args: argparse.Namespace) -> int:
                    "guard_ok": row.get("guard_ok", True)}
         raw_results.append(row)
 
-    if len(raw_results) != n:
-        sys.stderr.write(f"need {n} results, got {len(raw_results)}\n")
+    obj_names = [o["name"] for o in obj_list]
+    try:
+        y_by_obj, cellvals_by_obj, mean_rows, total_obs = _collect_multi_metric(
+            raw_results, obj_names, n
+        )
+    except (ValueError, KeyError) as exc:
+        sys.stderr.write(f"results parse error: {exc}\n")
         return 2
 
-    # Build lookup: run_id -> row
-    results_by_id: dict[int, dict] = {int(r["run_id"]): r for r in raw_results}
-
-    # Per-objective effects analysis
+    # Per-objective effects analysis (replicate-aware: pure error per objective)
     per_objective: dict[str, dict] = {}
+    any_replicated = False
     for obj in obj_list:
         obj_name = obj["name"]
         direction = obj.get("direction", "lower")
-        y_obj = np.array([
-            float(results_by_id[i]["values"][obj_name]) for i in range(n)
-        ])
-        eff = fit_effects(matrix, y_obj, include_interactions=include_interactions)
+        cell_values = cellvals_by_obj[obj_name]
+        if any(len(c) > 1 for c in cell_values):
+            any_replicated = True
+        eff = fit_effects(matrix, y_by_obj[obj_name],
+                          include_interactions=include_interactions,
+                          cell_values=cell_values)
         findings = rank_findings(eff, factor_names)
         per_objective[obj_name] = {
             "ranked_effects": findings,
             "r2": eff["r2"],
             "intercept": eff["intercept"],
+            "intercept_stats": eff["intercept_stats"],
             "direction": direction,
+            "residual_df": eff["residual_df"],
+            "pure_error_df": eff["pure_error_df"],
+            "error_df": eff["error_df"],
+            "error_source": eff["error_source"],
+            "inference": eff["inference"],
+            "warnings": eff["warnings"],
         }
 
-    # Build runs list for objectives.select_best
-    runs_for_selection = [
-        {"run_id": int(results_by_id[i]["run_id"]),
-         "values": {k_: float(v) for k_, v in results_by_id[i]["values"].items()}}
-        for i in range(n)
-    ]
+    # Build runs list for objectives.select_best (cell means when replicated)
+    runs_for_selection = [mean_rows[i] for i in range(n)]
 
     try:
         sel_result = objectives.select_best(runs_for_selection, obj_list, selection)
@@ -435,8 +870,11 @@ def cmd_analyze(args: argparse.Namespace) -> int:
             "design_type": design_data["design"]["type"],
             "n_runs": n,
             "n_factors": k,
+            "n_observations": total_obs,
+            "replicated": any_replicated,
             "selection": selection,
         },
+        "aliasing": aliasing,
         "per_objective": per_objective,
         "selection": sel_result,
         "best_run": best_run_id,
