@@ -141,6 +141,175 @@ def build_design(k: int, design_type: str) -> tuple[np.ndarray, str]:
 
 
 # ---------------------------------------------------------------------------
+# Alias / confounding structure
+# ---------------------------------------------------------------------------
+
+def _term_label(term: tuple[int, ...], factor_names: list[str] | None) -> str:
+    """Human label for an effect term given as a tuple of factor indices.
+    () → 'I' (the identity / grand mean column)."""
+    if not term:
+        return "I"
+    if factor_names is not None:
+        return "·".join(factor_names[i] for i in term)
+    # Letter coding A, B, C, … when no names supplied.
+    return "".join(chr(ord("A") + i) for i in term)
+
+
+def alias_structure(design: np.ndarray, factor_names: list[str] | None = None,
+                    max_order: int = 2) -> dict:
+    """Compute the confounding structure of a 2-level design empirically.
+
+    Two effects are aliased iff their ±1 model columns are identical up to
+    sign — that is the operational definition of confounding, independent of
+    how the design was generated. We enumerate the grand mean, all main
+    effects, and all interactions up to `max_order`, group terms whose columns
+    coincide, and read the resolution off the shortest defining-relation word.
+
+    Returns:
+      {
+        "resolution": "III" | "IV" | "V" | "Full" | "None",
+        "resolution_int": int | None,
+        "defining_relation": ["I = ABD = ACE = BCDE", ...] as a list of words,
+        "alias_chains": [["A", "BD", ...], ...],   # each chain = confounded set
+        "aliasing": bool,
+        "note": str,
+      }
+
+    For a full factorial (no two enumerated effects share a column) the result
+    states "no aliasing (full factorial)".
+    """
+    n, k = design.shape
+
+    def column(term: tuple[int, ...]) -> np.ndarray:
+        col = np.ones(n)
+        for idx in term:
+            col = col * design[:, idx]
+        return col
+
+    def canon_key(col: np.ndarray) -> tuple:
+        """Canonical key for a column up to sign (first nonzero entry → +)."""
+        sign = 1.0
+        for v in col:
+            if v != 0:
+                sign = 1.0 if v > 0 else -1.0
+                break
+        return tuple(np.round(col * sign, 9))
+
+    identity_col = tuple(np.round(np.ones(n), 9))
+
+    # --- Defining relation: search ALL orders for words equal to the I column.
+    # A regular fractional design's identity words can be any length up to k,
+    # so we must enumerate every subset to recover the full generating set.
+    defining_words: list[tuple[int, ...]] = []
+    for order in range(1, k + 1):
+        for combo in itertools.combinations(range(k), order):
+            if canon_key(column(combo)) == identity_col:
+                defining_words.append(combo)
+    defining_words.sort(key=lambda t: (len(t), t))
+
+    # --- Alias chains among the readable effects (mains + ≤max_order inter).
+    readable_terms: list[tuple[int, ...]] = []
+    for order in range(1, min(max_order, k) + 1):
+        readable_terms.extend(itertools.combinations(range(k), order))
+
+    groups: dict[tuple, list[tuple[int, ...]]] = {}
+    for term in readable_terms:
+        groups.setdefault(canon_key(column(term)), []).append(term)
+
+    alias_chains: list[list[str]] = []
+    for canon, members in groups.items():
+        if canon == identity_col:
+            continue
+        if len(members) > 1:
+            chain = sorted(members, key=lambda t: (len(t), t))
+            alias_chains.append([_term_label(t, factor_names) for t in chain])
+    alias_chains.sort(key=lambda c: (len(c[0]) if c else 0, c))
+
+    # A design is non-regular (e.g. Plackett-Burman) when its columns are
+    # orthogonal yet no exact ±1 alias group / identity word exists — its
+    # confounding is fractional (partial), not full. Detect via off-diagonal
+    # correlation between a main effect and any 2-way interaction column.
+    partial_alias = False
+    if not defining_words and not alias_chains and k >= 3:
+        main_cols = [design[:, i] for i in range(k)]
+        for i, j in itertools.combinations(range(k), 2):
+            inter = design[:, i] * design[:, j]
+            for m, mc in enumerate(main_cols):
+                if m in (i, j):
+                    continue
+                if abs(float(mc @ inter)) > 1e-9:
+                    partial_alias = True
+                    break
+            if partial_alias:
+                break
+
+    aliasing = bool(defining_words) or bool(alias_chains) or partial_alias
+
+    if not aliasing:
+        return {
+            "resolution": "Full",
+            "resolution_int": None,
+            "defining_relation": ["I"],
+            "alias_chains": [],
+            "aliasing": False,
+            "note": "no aliasing (full factorial)",
+        }
+
+    if partial_alias and not defining_words and not alias_chains:
+        return {
+            "resolution": "III*",
+            "resolution_int": 3,
+            "defining_relation": ["I (non-regular — no clean defining relation)"],
+            "alias_chains": [],
+            "aliasing": True,
+            "note": (
+                "Non-regular design (Plackett-Burman): orthogonal main effects, "
+                "but each main is PARTIALLY aliased with many two-way "
+                "interactions. Use for main-effects screening only; do not "
+                "interpret interactions."
+            ),
+        }
+
+    # Resolution = length of the shortest defining-relation word.
+    roman = {3: "III", 4: "IV", 5: "V", 6: "VI", 7: "VII"}
+    if defining_words:
+        res_int = min(len(w) for w in defining_words)
+        resolution = roman.get(res_int, str(res_int))
+        relation = "I = " + " = ".join(
+            _term_label(w, factor_names) for w in defining_words
+        )
+    else:
+        # Alias chains exist but no exact identity word recovered: report the
+        # confounding without claiming a resolution number.
+        res_int = None
+        resolution = "Aliased"
+        relation = "I"
+
+    if res_int == 3:
+        note = ("Resolution III: main effects are confounded with two-way "
+                "interactions; interpret each aliased chain together, not as "
+                "an isolated main effect.")
+    elif res_int == 4:
+        note = ("Resolution IV: main effects are clear of two-way interactions, "
+                "but two-way interactions are confounded with each other.")
+    elif res_int is not None and res_int >= 5:
+        note = (f"Resolution {resolution}: main effects and two-way "
+                "interactions are clear of each other.")
+    else:
+        note = ("Effects are aliased; see alias_chains. No clean defining "
+                "relation recovered — interpret confounded terms together.")
+
+    return {
+        "resolution": resolution,
+        "resolution_int": res_int,
+        "defining_relation": [relation],
+        "alias_chains": alias_chains,
+        "aliasing": True,
+        "note": note,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Effects analyzer
 # ---------------------------------------------------------------------------
 
@@ -397,12 +566,14 @@ def cmd_generate(args: argparse.Namespace) -> int:
     rng = np.random.default_rng(args.seed)
     order = list(range(len(runs)))
     rng.shuffle(order)
+    aliasing = alias_structure(matrix, factor_names=[f["name"] for f in factors])
     output = {
         "design": {"type": design_type, "name": name, "n_runs": len(runs), "n_factors": k},
         "factors": [{"name": f["name"]} for f in factors],
         "matrix": matrix.tolist(),
         "run_order": order,
         "runs": runs,
+        "aliasing": aliasing,
     }
     print(json.dumps(output, indent=2))
     return 0
