@@ -39,6 +39,7 @@ from __future__ import annotations
 import argparse
 import itertools
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -389,7 +390,26 @@ def fit_effects(design: np.ndarray, y: np.ndarray, include_interactions: bool = 
     n, k = design.shape
     X, labels = _design_matrix(design, include_interactions)
     p_terms = X.shape[1]
-    beta, _resid, rank, _ = np.linalg.lstsq(X, y, rcond=None)
+
+    # Pure-error term (independent of the model) when cells are replicated.
+    pure_error_var, pure_error_df = (0.0, 0)
+    replicate_counts: list[int] | None = None
+    if cell_values is not None:
+        pure_error_var, pure_error_df = doe_stats.pooled_pure_error(cell_values)
+        replicate_counts = [len(c) for c in cell_values]
+
+    # When replicated, fit at OBSERVATION level so the point estimates and the
+    # (XᵀX)⁻¹ used for standard errors come from one coherent OLS. For balanced
+    # / orthogonal designs this is identical to the cell-mean fit; for
+    # UNBALANCED replication it is the correct weighting (more replicates →
+    # more influence). Unreplicated input fits the cell-level matrix as before.
+    if pure_error_df > 0 and replicate_counts is not None:
+        X_fit = np.repeat(X, replicate_counts, axis=0)
+        y_fit = np.concatenate([np.asarray(c, dtype=float) for c in cell_values])
+    else:
+        X_fit, y_fit = X, y
+
+    beta, _resid, rank, _ = np.linalg.lstsq(X_fit, y_fit, rcond=None)
     rank = int(rank)
 
     intercept = float(beta[0])
@@ -399,17 +419,14 @@ def fit_effects(design: np.ndarray, y: np.ndarray, include_interactions: bool = 
                      if labels[i][0] == "inter"}
 
     # ---- Error term selection -------------------------------------------
-    # Residual term from the model fit (always available, may have 0 df).
-    fitted = X @ beta
-    residual_ss = float(np.sum((y - fitted) ** 2))
-    residual_df = int(n - rank)
-
-    pure_error_var, pure_error_df = (0.0, 0)
-    if cell_values is not None:
-        pure_error_var, pure_error_df = doe_stats.pooled_pure_error(cell_values)
+    # Residual from the (observation-level when replicated) model fit.
+    fitted = X_fit @ beta
+    residual_ss = float(np.sum((y_fit - fitted) ** 2))
+    residual_df = int(X_fit.shape[0] - rank)
 
     if pure_error_df > 0:
-        # Replicated design: pure error is the correct denominator.
+        # Replicated design: pooled within-cell pure error is the correct,
+        # model-independent denominator for a stochastic response.
         error_var = pure_error_var
         error_df = pure_error_df
         error_source = "pure_error"
@@ -423,12 +440,12 @@ def fit_effects(design: np.ndarray, y: np.ndarray, include_interactions: bool = 
         error_df = 0
         error_source = "none"
 
-    # ---- Variance explained (r²) ----------------------------------------
-    y_var = float(np.var(y) * n)
-    if residual_df >= 0 and y_var > 0 and rank == p_terms:
-        r2 = 1.0 - residual_ss / y_var
-    elif y_var <= 0:
+    # ---- Variance explained (r²), reported at the observation level ------
+    y_var = float(np.sum((y_fit - y_fit.mean()) ** 2))
+    if y_var <= 0:
         r2 = 1.0
+    elif rank == p_terms:
+        r2 = 1.0 - residual_ss / y_var
     else:
         r2 = None
 
@@ -442,7 +459,10 @@ def fit_effects(design: np.ndarray, y: np.ndarray, include_interactions: bool = 
         )
 
     if error_df > 0:
-        ses = doe_stats.coef_standard_errors(X, error_var)
+        # SE_j = sqrt(error_var · (XᵀX)⁻¹_jj) on the SAME (observation-level
+        # when replicated) matrix the coefficients were fit on, so SEs are
+        # correct for balanced AND unbalanced replication.
+        ses = doe_stats.coef_standard_errors(X_fit, error_var)
         t_crit = doe_stats.t_ppf(0.975, error_df)
     else:
         ses = np.full(p_terms, float("nan"))
@@ -637,7 +657,10 @@ def _collect_single_metric(lines: list[str], n: int
         rid = int(row["run_id"])
         if rid not in cells:
             raise ValueError(f"run_id {rid} out of range [0,{n})")
-        cells[rid].append(float(row["value"]))
+        val = float(row["value"])
+        if not math.isfinite(val):
+            raise ValueError(f"run_id {rid}: non-finite value {val!r}")
+        cells[rid].append(val)
         total_obs += 1
     missing = [i for i in range(n) if not cells[i]]
     if missing:
@@ -667,11 +690,17 @@ def _collect_multi_metric(rows: list[dict], obj_names: list[str], n: int
     if missing:
         raise ValueError(f"no results for run_id(s) {missing}")
 
+    def _finite(v: float, rid: int, name: str) -> float:
+        fv = float(v)
+        if not math.isfinite(fv):
+            raise ValueError(f"run_id {rid}, objective '{name}': non-finite value {fv!r}")
+        return fv
+
     y_by_obj: dict[str, np.ndarray] = {}
     cellvals_by_obj: dict[str, list[list[float]]] = {}
     for name in obj_names:
         per_cell_vals = [
-            [float(r["values"][name]) for r in cells[i]] for i in range(n)
+            [_finite(r["values"][name], i, name) for r in cells[i]] for i in range(n)
         ]
         cellvals_by_obj[name] = per_cell_vals
         y_by_obj[name] = np.array([float(np.mean(v)) for v in per_cell_vals])

@@ -123,10 +123,14 @@ def t_sf_two_sided(t: float, df: float) -> float:
 
     Reference: t=2.0, df=8 → p ≈ 0.0805; t=0 → p = 1.0.
     df ≤ 0 has no error degrees of freedom; p is undefined → return NaN.
+    A NaN t-statistic propagates as NaN (never spuriously 0/significant); an
+    infinite t (perfect separation) tends to p = 0.
     """
     if df <= 0:
         return float("nan")
-    if not math.isfinite(t):
+    if math.isnan(t):
+        return float("nan")
+    if math.isinf(t):
         return 0.0
     x = df / (df + t * t)
     return betai(df / 2.0, 0.5, x)

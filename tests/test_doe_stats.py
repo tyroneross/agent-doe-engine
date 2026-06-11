@@ -94,6 +94,18 @@ def test_t_pvalue_zero_df_is_nan():
     assert math.isnan(ds.t_sf_two_sided(2.0, 0))
 
 
+def test_t_pvalue_nan_t_stays_nan():
+    # REGRESSION (auditor 2026-06-10): a NaN t-statistic must NOT become p=0
+    # (which would read as spuriously significant). NaN in → NaN out.
+    assert math.isnan(ds.t_sf_two_sided(float("nan"), 8))
+
+
+def test_t_pvalue_inf_t_is_zero():
+    # Perfect separation (infinite t) → p = 0.
+    assert ds.t_sf_two_sided(float("inf"), 8) == 0.0
+    assert ds.t_sf_two_sided(float("-inf"), 8) == 0.0
+
+
 # ---------------------------------------------------------------------------
 # Student-t CDF and inverse
 # ---------------------------------------------------------------------------

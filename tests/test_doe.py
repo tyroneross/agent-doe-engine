@@ -35,6 +35,7 @@ except ImportError:
 SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 import doe  # noqa: E402
+import doe_stats  # noqa: E402
 
 SCRIPT = SCRIPTS_DIR / "doe.py"
 
@@ -579,6 +580,61 @@ class InferenceTests(unittest.TestCase):
         self.assertTrue(e["main_stats"][1]["significant"])
         self.assertFalse(e["inter_stats"][(0, 1)]["significant"])
 
+    def test_replicate_se_matches_observation_level_ols(self) -> None:
+        # REGRESSION (auditor nay 2026-06-10): replicated SEs must equal the
+        # observation-level OLS SE, NOT the √r-inflated cell-level SE.
+        d = doe.full_factorial_2level(2)
+        rng = np.random.default_rng(1)
+        r = 3
+        cells = [[float(10 + 5 * d[i, 0] + 2 * d[i, 1] + rng.normal(0, 1.0))
+                  for _ in range(r)] for i in range(4)]
+        ymeans = np.array([np.mean(c) for c in cells])
+        e = doe.fit_effects(d, ymeans, include_interactions=True, cell_values=cells)
+
+        # Ground truth: expand to observation level and run full OLS by hand.
+        rows, yobs = [], []
+        for i in range(4):
+            for v in cells[i]:
+                rows.append([1, d[i, 0], d[i, 1], d[i, 0] * d[i, 1]])
+                yobs.append(v)
+        X = np.array(rows, dtype=float)
+        yo = np.array(yobs)
+        beta, _, _, _ = np.linalg.lstsq(X, yo, rcond=None)
+        resid = yo - X @ beta
+        s2 = float(resid @ resid) / (len(yo) - X.shape[1])
+        se_true = np.sqrt(s2 * np.diag(np.linalg.inv(X.T @ X)))
+        self.assertAlmostEqual(e["main_stats"][0]["se"], se_true[1], places=10)
+        self.assertAlmostEqual(e["main_stats"][1]["se"], se_true[2], places=10)
+
+    def test_unbalanced_replicates_se_correct(self) -> None:
+        # Unequal replicate counts: SE = sqrt(pure_error_var · (XᵀX)⁻¹_jj) on
+        # the OBSERVATION-level matrix. Point estimates also weight by replicate
+        # count (observation-level OLS), not the unweighted cell means.
+        d = doe.full_factorial_2level(2)
+        cells = [[10.0, 12.0, 11.0], [20.0, 22.0], [5.0, 7.0, 6.0, 8.0], [30.0]]
+        ymeans = np.array([np.mean(c) for c in cells])
+        e = doe.fit_effects(d, ymeans, include_interactions=False, cell_values=cells)
+
+        # Build the observation-level matrix and the pooled pure-error variance.
+        rows, yobs = [], []
+        for i in range(4):
+            for v in cells[i]:
+                rows.append([1, d[i, 0], d[i, 1]])
+                yobs.append(v)
+        X = np.array(rows, dtype=float)
+        yo = np.array(yobs)
+        # Point estimates: observation-level OLS.
+        beta_true, _, _, _ = np.linalg.lstsq(X, yo, rcond=None)
+        self.assertAlmostEqual(e["main"][0], beta_true[1], places=10)
+        self.assertAlmostEqual(e["main"][1], beta_true[2], places=10)
+        # SEs: pooled pure-error variance on the observation-level info matrix.
+        pe_var, pe_df = doe_stats.pooled_pure_error(cells)
+        self.assertEqual(e["error_df"], pe_df)
+        self.assertEqual(e["error_source"], "pure_error")
+        se_true = np.sqrt(pe_var * np.diag(np.linalg.inv(X.T @ X)))
+        for j in range(1, 3):
+            self.assertAlmostEqual(e["main_stats"][j - 1]["se"], se_true[j], places=10)
+
     def test_pooled_variance_matches_hand_value(self) -> None:
         # Pure error must equal the hand-pooled within-cell variance.
         d = doe.full_factorial_2level(2)
@@ -730,6 +786,34 @@ class ReplicateCliTests(unittest.TestCase):
             self.assertEqual(out["summary"]["error_source"], "pure_error")
             self.assertEqual(out["summary"]["pure_error_df"], 8)
             self.assertEqual(out["summary"]["inference"], "ok")
+
+    def test_non_finite_value_rejected(self) -> None:
+        # REGRESSION (auditor 2026-06-10): NaN/Infinity in results must fail
+        # loudly, not silently contaminate the means/inference.
+        factors = [{"name": "x1", "low": 0, "high": 1},
+                   {"name": "x2", "low": 0, "high": 1}]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            r = subprocess.run(
+                [sys.executable, str(SCRIPT), "generate",
+                 "--factors", json.dumps(factors), "--design", "full", "--seed", "0"],
+                capture_output=True, text=True, timeout=10,
+            )
+            (tmp / "design.json").write_text(r.stdout)
+            # Write a results file with a NaN (json emits NaN literally).
+            with (tmp / "results.jsonl").open("w") as f:
+                f.write(json.dumps({"run_id": 0, "value": 1.0}) + "\n")
+                f.write('{"run_id": 1, "value": NaN}\n')
+                f.write(json.dumps({"run_id": 2, "value": 3.0}) + "\n")
+                f.write(json.dumps({"run_id": 3, "value": 4.0}) + "\n")
+            r2 = subprocess.run(
+                [sys.executable, str(SCRIPT), "analyze",
+                 "--design", str(tmp / "design.json"),
+                 "--results", str(tmp / "results.jsonl")],
+                capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(r2.returncode, 2)
+            self.assertIn("non-finite", r2.stderr)
 
     def test_analyze_emits_aliasing_block(self) -> None:
         # Fractional design → analyze output must carry the alias structure.
