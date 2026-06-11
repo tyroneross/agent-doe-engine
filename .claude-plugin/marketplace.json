@@ -12,7 +12,7 @@
     {
       "name": "agent-doe-engine",
       "source": "./",
-      "description": "A design-of-experiments engine for tuning AI agents. Test many input variables in few runs (2-7 factors in <=8 runs, 8-11 in a 12-run screening), measure every objective on every run, and select the best trade-off across competing metrics by weighted scalarization, Derringer-Suich desirability, or Pareto frontier. Falls back to a single-variable autoresearch keep/revert loop. numpy-only, host-agnostic (Claude Code + Codex manifests).",
+      "description": "A design-of-experiments engine for tuning AI agents. It finds which settings actually change your results, tells you whether each change is real or just run-to-run noise, and picks the best combination when speed, cost, and quality compete. One planned batch of trials instead of guessing or testing one thing at a time.",
       "version": "0.1.0",
       "author": {
         "name": "Tyrone Ross"

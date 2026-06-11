@@ -2,26 +2,68 @@
 
 A design-of-experiments engine for tuning AI agents.
 
-It runs a small, structured set of trials that change several settings at once, then measures which settings actually move each metric you care about (speed, cost, quality, accuracy) and which combination best balances goals that compete. It separates real effects from flukes, and flags when two settings are tangled so you can't credit one over the other. Built for agent tuning: which model, which prompt, which setup, answered in a few runs instead of guessing.
+It finds which settings actually change your results, and the best combination when your goals compete. It does this in one small, planned batch of trials, instead of guessing or testing one thing at a time.
 
-> Extracted and extended from [build-loop](https://github.com/tyroneross/build-loop)'s single-metric `optimize` subsystem. agent-doe-engine adds true multi-objective selection (scalarization, Derringer-Suich desirability, Pareto frontier) while keeping the same numpy-only DOE engine.
+## The problem it solves
 
-## Why
+Two things go wrong with normal tuning:
 
-Most "make it faster" work optimizes one number and silently regresses another. agent-doe-engine measures every objective on every experimental run, fits which factors move which number, and selects the run that best satisfies all goals under explicit weights. No vibes, no single-metric tunnel vision.
+1. **One-at-a-time testing is slow and blind.** It misses the cases where two settings only matter together (for example, a bigger batch size only helps when you also add workers).
+2. **A single run can fool you.** Every run has random variation, so a number that looks better might just be noise, not the setting you changed.
 
-## Two modes
+This engine handles both: it varies several settings together, and it tells you which changes are real.
 
-- **DOE mode (default).** Test up to 11 factors in a single experiment. 2 to 3 factors give a full factorial; 4 to 7 give a fractional factorial (8 runs); 8 to 11 give a Plackett-Burman screening (12 runs). Fits main effects plus interactions per objective.
-- **Autoresearch mode (fallback).** One factor, greedy loop: hypothesize, measure, keep if better else revert.
+## What it does
 
-## Selection methods
+You list the settings to test and the results you care about (speed, cost, quality, accuracy). It runs a planned set of trials, then for each result it reports:
+
+- **Which settings moved it, and by how much**, including settings that only matter in combination.
+- **Whether that movement is real or just noise** (see "Real effect vs fluke").
+- **Which settings can't be told apart** in this design (see "Tangled settings").
+- **The single best configuration** when your goals compete.
+
+## Real effect vs fluke
+
+Run the same setting twice and the result won't be identical. That spread is the noise.
+
+- A **real effect** is a change bigger than that noise. Re-run and you would see it again.
+- A **fluke** is a change that fits inside the noise. Re-run and it may shrink, vanish, or flip.
+
+For every effect it reports a p-value and a confidence interval, and it warns you when you have too few runs to tell a real effect from a fluke (low power). The point: you do not ship a change that was never real.
+
+## Tangled settings (aliasing)
+
+To test many settings in few runs, the smaller designs leave some effects mathematically inseparable. A result might be caused by setting A, or by the combination of B and C, and this data cannot tell which.
+
+It reports exactly which effects are tangled, so you never credit the wrong setting. Full designs have no tangling; the cost of that clarity is more runs.
+
+## The designs it uses, and why
+
+It picks the smallest design that still answers your question:
+
+| Settings | Design | What it does | Why it matters |
+|---|---|---|---|
+| 2 to 3 | **Full factorial** (4 to 8 runs) | Tests every combination | Most accurate; finds every interaction; nothing tangled |
+| 4 to 7 | **Fractional factorial** (8 runs) | Tests a carefully chosen subset | Far fewer runs; some effects tangled, and it tells you which |
+| 8 to 11 | **Plackett-Burman** (12 runs) | A screening design | Quickly finds the few settings that matter out of many, before a deeper test |
+
+(For a single setting, it falls back to a simpler "try a change, measure, keep it if better" loop. That mode is cheaper to set up but cannot see interactions.)
+
+## When your goals compete
+
+When you care about several numbers that fight each other (faster, but cheaper, but more accurate), choose how to balance them:
 
 | Method | What it does | Use when |
 |---|---|---|
-| `scalarize` | Best weighted sum of normalized objectives | You can express priorities as weights |
-| `desirability` | Derringer-Suich D (geometric mean of per-objective desirabilities) | You want each objective to clear a bar, not just average out |
-| `pareto` | The non-dominated trade-off set | You want to see all the trade-offs before committing |
+| **scalarize** | Picks the best weighted blend of your goals | You can rank goals by weight |
+| **desirability** | Every goal must clear a minimum bar, not just average out | No single goal can be sacrificed |
+| **pareto** | Shows all the best trade-offs (the options where improving one number can only come by hurting another) | You want to see the choices before committing |
+
+## Built for agent tuning
+
+Which model (cheap or frontier), which prompt structure, which configuration, scored on accuracy and token cost and latency at the same time. A few planned runs instead of guessing.
+
+> Extracted and extended from [build-loop](https://github.com/tyroneross/build-loop)'s single-metric `optimize` subsystem. agent-doe-engine adds multi-objective selection while keeping the same numpy-only engine.
 
 ## Install
 
