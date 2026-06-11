@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: 2025-2026 Tyrone Ross, Jr <46267523+tyroneross@users.noreply.github.com>
 # SPDX-License-Identifier: Apache-2.0
-"""Factor-adjustability validation — prove the optimizer can move it.
+"""Factor-adjustability validation - prove the optimizer can move it.
 
 Stdlib only. Run:
     python3 validate_factors.py --workdir <path> --candidates <suggest_factors.json>
@@ -11,7 +11,7 @@ For each candidate (output from `suggest_factors.py --json`), this script:
   1. Locates every definition site for the named constant/env-var across the
      scanned source tree, using the same patterns as suggest_factors.py.
   2. If the candidate is `adjustable`, applies a test mutation to the value
-     at the primary definition site (byte-level rewrite — *not* an AST edit;
+     at the primary definition site (byte-level rewrite - *not* an AST edit;
      the goal is to prove file-mutation actually changes what downstream
      readers see).
   3. Re-reads the file and confirms the new value is present.
@@ -19,16 +19,16 @@ For each candidate (output from `suggest_factors.py --json`), this script:
      equality with the snapshot taken before mutation.
   5. Classifies the candidate as one of:
 
-       adjustable                       — probe passed end-to-end
-       not_adjustable / dead_constant   — zero references outside its own
+       adjustable                       - probe passed end-to-end
+       not_adjustable / dead_constant   - zero references outside its own
                                           definition site
        not_adjustable / duplicate_definition
-                                        — same name defined at >=2 sites
+                                        - same name defined at >=2 sites
                                           with conflicting values (which one
                                           wins is ambiguous)
-       not_adjustable / mutation_failed — write attempt did not change the
+       not_adjustable / mutation_failed - write attempt did not change the
                                           file (read-only FS, locked file)
-       not_adjustable / revert_failed   — write succeeded but original bytes
+       not_adjustable / revert_failed   - write succeeded but original bytes
                                           could not be restored; surfaced
                                           loudly because the working tree is
                                           now dirty
@@ -36,7 +36,7 @@ For each candidate (output from `suggest_factors.py --json`), this script:
 Output: JSON list mirroring the input plus `adjustability`, `reason`,
 `evidence`, and (for adjustable cases) `definition_site`.
 
-This script never modifies files unless it can also revert them — it
+This script never modifies files unless it can also revert them - it
 performs a snapshot-write-verify-revert-verify cycle on a SINGLE primary
 definition site. On any failure mid-cycle, it attempts to restore the
 original bytes and surfaces a `revert_failed` reason if that fails.
@@ -52,14 +52,14 @@ from collections import defaultdict
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
 
-# Patterns mirror suggest_factors.py — keep in sync if that file changes.
+# Patterns mirror suggest_factors.py - keep in sync if that file changes.
 EXTS = {".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".go", ".rs", ".rb"}
 
 SKIP_DIRS = {
     "node_modules", ".git", "dist", "build", ".next", ".nuxt",
     "__pycache__", ".pytest_cache", ".cache", "coverage",
     ".venv", "venv", "env", "target", ".bookmark", ".navgator",
-    ".multi-goal", ".claude-code-debugger", "vendor",
+    ".agent-doe-engine", ".multi-goal", ".claude-code-debugger", "vendor",
 }
 
 # Same anchored patterns as suggest_factors.py for definition sites
@@ -160,8 +160,8 @@ def count_references(name: str, root: Path, exclude_positions: set[tuple[str, in
     """Count token-bounded occurrences of `name` across ALL source files,
     excluding only the exact (file, line) positions that are definition sites.
 
-    A match on any other line — including non-definition lines in the same file
-    as a definition — counts as a reference. A factor with zero such references
+    A match on any other line - including non-definition lines in the same file
+    as a definition - counts as a reference. A factor with zero such references
     is a dead constant.
 
     Previously this excluded entire definition files, which caused constants
@@ -216,7 +216,7 @@ def _format_value(probe: float, original: float) -> str:
 def _rewrite_line(raw_line: str, name: str, original: float, probe: float, pattern: str) -> str | None:
     """Produce a single-line rewrite of `raw_line` that swaps `original` for
     `probe` at the *named* binding site. Returns None if no substitution
-    matched (defense in depth — the caller treats None as mutation_failed).
+    matched (defense in depth - the caller treats None as mutation_failed).
     """
     new_val_str = _format_value(probe, original)
     # The original value can appear as int ("5") or float ("5.0"); accept
@@ -269,7 +269,7 @@ def _rewrite_line(raw_line: str, name: str, original: float, probe: float, patte
 def probe_mutation(site: DefSite) -> tuple[bool, str]:
     """Snapshot → rewrite → verify → revert → verify. Returns (passed, evidence).
 
-    On revert failure, raises RuntimeError — the caller MUST surface the
+    On revert failure, raises RuntimeError - the caller MUST surface the
     dirty-file state loudly. We never silently leave the tree modified.
     """
     path = Path(site.file)
@@ -356,7 +356,7 @@ def probe_mutation(site: DefSite) -> tuple[bool, str]:
 
 
 def _name_from_site_or_raise(site: DefSite) -> str:
-    """Re-extract the name from the raw line — we keep a tiny verifier so a
+    """Re-extract the name from the raw line - we keep a tiny verifier so a
     bad upstream record can't silently corrupt the rewrite."""
     line = site.raw_line
     if site.pattern == "upper_snake":
@@ -422,7 +422,7 @@ def classify_candidate(name: str, current_value: float, root: Path) -> Validated
     try:
         passed, evidence = probe_mutation(primary)
     except RuntimeError as exc:
-        # Loud surface — the working tree may be dirty
+        # Loud surface - the working tree may be dirty
         return Validated(
             name=name, current_value=current_value,
             adjustability="not_adjustable", reason="revert_failed",

@@ -3,7 +3,7 @@
 
 # Method
 
-multi-goal turns "make it better" into a measured experiment. Two engines.
+agent-doe-engine turns "make it better" into a measured experiment. Two engines.
 
 ## 1. Design of Experiments (multi-variable)
 
@@ -25,7 +25,7 @@ When there's one thing to try, loop: hypothesize one atomic change → measure �
 
 ## Multi-objective selection
 
-When ≥2 objectives compete, "best" needs a definition. multi-goal offers three, all in `scripts/objectives.py`.
+When ≥2 objectives compete, "best" needs a definition. agent-doe-engine offers three, all in `scripts/objectives.py`.
 
 ### scalarize (default)
 
@@ -39,12 +39,12 @@ Each objective maps to a desirability `dᵢ ∈ [0,1]` (here the same one-sided 
 D = (∏ᵢ dᵢ^wᵢ) ^ (1 / Σ wᵢ)
 ```
 
-The geometric mean means a `dᵢ = 0` on any single objective forces `D = 0` — a run that fails one goal cannot be rescued by excelling at the others. Use when every objective must clear a bar. (Derringer & Suich, *Journal of Quality Technology*, 1980 — the standard multi-response DOE technique.)
+The geometric mean means a `dᵢ = 0` on any single objective forces `D = 0` - a run that fails one goal cannot be rescued by excelling at the others. Use when every objective must clear a bar. (Derringer & Suich, *Journal of Quality Technology*, 1980 - the standard multi-response DOE technique.)
 
 ### pareto
 
-Return the non-dominated set: a run is on the front if no other run is at-least-as-good on every objective and strictly better on at least one. The front is the set of rational trade-offs; nothing off it should ever be chosen. When a single winner is required, multi-goal picks the highest-desirability point on the front. The front is **always** computed and returned regardless of the selection method, so you can inspect trade-offs even when you asked for a scalar pick.
+Return the non-dominated set: a run is on the front if no other run is at-least-as-good on every objective and strictly better on at least one. The front is the set of rational trade-offs; nothing off it should ever be chosen. When a single winner is required, agent-doe-engine picks the highest-desirability point on the front. The front is **always** computed and returned regardless of the selection method, so you can inspect trade-offs even when you asked for a scalar pick.
 
 ## Why the loop scores differently from DOE
 
-DOE normalizes across a fixed batch of runs (it has all of them). The greedy loop is streaming — there is no fixed set to min-max against. So `loop.py` scores each candidate as the weighted sum of per-objective *improvement ratios* versus a fixed baseline measured at init (`baseline_aggregate`): for `lower`, `baseline/value`; for `higher`, `value/baseline`; `> 1` means net improvement. This keeps keep/revert decisions stable across iterations. Both live in `objectives.py` so the math has one home.
+DOE normalizes across a fixed batch of runs (it has all of them). The greedy loop is streaming - there is no fixed set to min-max against. So `loop.py` scores each candidate as the weighted sum of per-objective *improvement ratios* versus a fixed baseline measured at init (`baseline_aggregate`): for `lower`, `baseline/value`; for `higher`, `value/baseline`; `> 1` means net improvement. This keeps keep/revert decisions stable across iterations. Both live in `objectives.py` so the math has one home.

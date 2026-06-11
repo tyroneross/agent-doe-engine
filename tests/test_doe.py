@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: 2025-2026 Tyrone Ross, Jr <46267523+tyroneross@users.noreply.github.com>
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for doe.py — design generation + effects analysis accuracy.
+"""Tests for doe.py - design generation + effects analysis accuracy.
 
 Ported from build-loop/scripts/test_optimize_doe.py; all design-matrix tests
 are byte-faithful. Multi-objective analyze tests are appended below.
 
 Tests:
-  DesignGeneratorTests    — full / fractional / PB matrices shape + orthogonality
-  RoutingTests            — auto-routing picks the right design type by k
-  EffectsAccuracyTests    — OLS recovers known ground-truth coefficients
-  LevelMappingTests       — ±1 → concrete level mapping
-  CliRoundTripTests       — generate → analyze (legacy single-metric) pipeline
-  PyDOE3EquivalenceTests  — skipped unless pyDOE3 installed
-  MultiObjectiveAnalyzeTests  — NEW: multi-objective analyze via --objectives
+  DesignGeneratorTests    - full / fractional / PB matrices shape + orthogonality
+  RoutingTests            - auto-routing picks the right design type by k
+  EffectsAccuracyTests    - OLS recovers known ground-truth coefficients
+  LevelMappingTests       - ±1 → concrete level mapping
+  CliRoundTripTests       - generate → analyze (legacy single-metric) pipeline
+  PyDOE3EquivalenceTests  - skipped unless pyDOE3 installed
+  MultiObjectiveAnalyzeTests  - NEW: multi-objective analyze via --objectives
 """
 from __future__ import annotations
 
@@ -246,7 +246,7 @@ class CliRoundTripTests(unittest.TestCase):
 class PyDOE3EquivalenceTests(unittest.TestCase):
     """If pyDOE3 happens to be installed, verify our matrices match.
 
-    Usually skipped because multi-goal's stdlib+numpy convention means pyDOE3
+    Usually skipped because agent-doe-engine's stdlib+numpy convention means pyDOE3
     isn't installed.
     """
 
@@ -254,7 +254,7 @@ class PyDOE3EquivalenceTests(unittest.TestCase):
         try:
             from pyDOE3 import fullfact as pd_full, fracfact as pd_frac
         except ImportError:
-            self.skipTest("pyDOE3 not installed (expected — multi-goal is stdlib+numpy)")
+            self.skipTest("pyDOE3 not installed (expected - agent-doe-engine is stdlib+numpy)")
 
         # Convert pyDOE3's 0/1 coding to our ±1 coding for comparison
         their_full = pd_full([2, 2, 2]) * 2 - 1
@@ -709,7 +709,7 @@ class AliasStructureTests(unittest.TestCase):
 
 class UserStudyRegressionTests(unittest.TestCase):
     """The 8-run/3-factor study that previously reported a bare r²≈0.94 must now
-    surface residual_df==1 and a LOW-POWER warning — proving the trust signals
+    surface residual_df==1 and a LOW-POWER warning - proving the trust signals
     stop over-trusting a high r² on an under-powered design."""
 
     def test_study_reports_low_power(self) -> None:

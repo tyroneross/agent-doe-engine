@@ -45,9 +45,9 @@ Use when a workload has a benchmark command but no specialized preset.
 - **Direction**: lower
 - **Benchmark guidance**: prefer representative workloads over microbenchmarks. For latency, run repeated samples (`--samples 5-9`), discard cold-start noise (`--warmups 1-2`), aggregate with `median` or `p95`. Re-measure on a fresh process to separate first-run download/JIT from steady-state cold start.
 
-## Multi-objective example — speed without bloat
+## Multi-objective example - speed without bloat
 
-The whole point of multi-goal: optimize competing profiles together. Write to `.multi-goal/optimize/objectives.json`:
+The whole point of agent-doe-engine: optimize competing profiles together. Write to `.agent-doe-engine/optimize/objectives.json`:
 
 ```json
 {

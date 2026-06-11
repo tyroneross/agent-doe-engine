@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
-"""loop.py — Core loop mechanics for the multi-goal autoresearch skill.
+"""loop.py: core loop mechanics for the agent-doe-engine autoresearch skill.
 
 Responsibilities:
 - Experiment state management (experiment.json)
@@ -17,11 +17,11 @@ NOT responsible for:
 - Editing code files (done by the host LLM agent)
 - Running git commit / revert (done by the host LLM agent)
 
-# MODULARITY NOTE — why loop scoring differs from doe.py:
+# MODULARITY NOTE (why loop scoring differs from doe.py):
 #
 # doe.py (batch mode) sees ALL runs at the end of the experiment and can
 # normalize each objective to [0,1] across the observed range (min-max
-# normalization).  loop.py is STREAMING — it must score one candidate at a
+# normalization).  loop.py is STREAMING; it must score one candidate at a
 # time without ever having collected a full run set.  batch min-max would
 # require re-running every past candidate on each new iteration to recompute
 # the bounds, which defeats the purpose of a greedy loop.  Instead, loop.py
@@ -71,7 +71,10 @@ class IterationResult:
 # Paths
 # ---------------------------------------------------------------------------
 
-_LOOP_DIR = ".multi-goal/optimize"
+_LOOP_DIR = ".agent-doe-engine/optimize"
+# Legacy path from before the agent-doe-engine rename (was "multi-goal").
+# Migrated on first access so existing experiments are not lost.
+_LEGACY_LOOP_DIR = ".multi-goal/optimize"
 _EXPERIMENT_FILE = "experiment.json"
 _RESULTS_FILE = "results.tsv"
 _EXPERIMENTS_SUBDIR = "experiments"
@@ -80,7 +83,24 @@ _TSV_HEADER = "iteration\tcommit\tmetric\tdelta\tstatus\tdescription\thypothesis
 
 
 def _loop_dir(workdir: Path) -> Path:
-    return workdir / _LOOP_DIR
+    """Resolve the runtime state dir, migrating a legacy `.multi-goal/` dir once.
+
+    If the new `.agent-doe-engine/optimize` dir is absent but a legacy
+    `.multi-goal/optimize` dir exists, move the legacy dir into place so an
+    existing user's in-progress experiment carries over transparently. Best
+    effort: any migration failure falls back to using the new path.
+    """
+    new_dir = workdir / _LOOP_DIR
+    if not new_dir.exists():
+        legacy_dir = workdir / _LEGACY_LOOP_DIR
+        if legacy_dir.exists():
+            try:
+                new_dir.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(legacy_dir), str(new_dir))
+            except Exception:
+                # Migration failed (permissions, race); fall back to the new path.
+                pass
+    return new_dir
 
 
 def _experiment_path(workdir: Path) -> Path:
@@ -387,7 +407,7 @@ def run_iteration(workdir: Path, iteration: int) -> IterationResult:
     1. Run metric_cmd to get the current value.
     2. Compute delta from the running best (not baseline).
     3. Run guard_cmd (if configured) to check acceptability.
-    4. Return an IterationResult — caller must do git commit/revert.
+    4. Return an IterationResult (caller must do git commit/revert).
 
     NOTE: This function does NOT commit or revert. The host LLM agent calling
     this function is responsible for all git operations.
@@ -473,7 +493,7 @@ def check_convergence(workdir: Path) -> tuple[bool, str]:
     """Check whether the loop should stop.
 
     Stopping conditions (in priority order):
-    1. budget exhausted — total iterations >= budget
+    1. budget exhausted (total iterations >= budget)
     2. 5 consecutive discards/errors → "plateau"
     3. metric trending worse over the last 3 kept iterations → "regressing"
 
@@ -610,7 +630,7 @@ def archive_experiment(workdir: Path) -> Path:
     archive_dir = _loop_dir(workdir) / _EXPERIMENTS_SUBDIR
     archive_dir.mkdir(parents=True, exist_ok=True)
 
-    # Avoid silent clobber — append a counter suffix if the name exists.
+    # Avoid silent clobber: append a counter suffix if the name exists.
     counter = 0
     suffix = ""
     while (archive_dir / f"{base_name}{suffix}.json").exists():
@@ -731,7 +751,7 @@ def _cmd_init(args: argparse.Namespace, workdir: Path) -> None:
     if "objectives" in exp:
         print(f"Objectives: {len(exp['objectives'])} objectives, selection={exp['selection']}")
         bv = exp.get("baseline_values", {})
-        print(f"baseline_values: {bv if bv else '(empty — use --set-baseline to populate)'}")
+        print(f"baseline_values: {bv if bv else '(empty; use --set-baseline to populate)'}")
     if "doe_baseline" in exp:
         print(
             f"DOE baseline applied: best_run={exp['doe_baseline'].get('best_run')} "
@@ -800,7 +820,7 @@ _CLI_ACTIONS = {
 
 
 def _cli() -> None:
-    parser = argparse.ArgumentParser(description="multi-goal loop mechanics")
+    parser = argparse.ArgumentParser(description="agent-doe-engine loop mechanics")
     parser.add_argument("--workdir", default=".", help="target repo root")
 
     group = parser.add_mutually_exclusive_group(required=True)

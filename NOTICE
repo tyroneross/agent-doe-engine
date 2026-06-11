@@ -1,7 +1,7 @@
-multi-goal
+agent-doe-engine
 Copyright 2025-2026 Tyrone Ross, Jr
 
-This product was authored by Tyrone Ross, Jr (https://github.com/tyroneross/multi-goal).
+This product was authored by Tyrone Ross, Jr (https://github.com/tyroneross/agent-doe-engine).
 Portions of this software were developed with the assistance of Anthropic's Claude
 (via Claude Code) and OpenAI's Codex (via Codex CLI); AI-pair-programming
 contributions are attributed via Co-Authored-By trailers in the git history.

@@ -1,24 +1,24 @@
 {
-  "name": "multi-goal",
+  "name": "agent-doe-engine",
   "owner": {
     "name": "Tyrone Ross",
     "url": "https://github.com/tyroneross"
   },
   "metadata": {
-    "description": "Official marketplace for multi-goal — multi-objective optimization via Design of Experiments",
+    "description": "Official marketplace for agent-doe-engine, a design-of-experiments engine for tuning AI agents",
     "version": "0.1.0"
   },
   "plugins": [
     {
-      "name": "multi-goal",
+      "name": "agent-doe-engine",
       "source": "./",
-      "description": "Multi-objective optimization via Design of Experiments. Test many input variables in few runs (2-7 factors in <=8 runs, 8-11 in a 12-run screening), measure every objective on every run, and select the best trade-off across competing metrics by weighted scalarization, Derringer-Suich desirability, or Pareto frontier. Falls back to a single-variable autoresearch keep/revert loop. numpy-only, host-agnostic (Claude Code + Codex manifests).",
+      "description": "A design-of-experiments engine for tuning AI agents. Test many input variables in few runs (2-7 factors in <=8 runs, 8-11 in a 12-run screening), measure every objective on every run, and select the best trade-off across competing metrics by weighted scalarization, Derringer-Suich desirability, or Pareto frontier. Falls back to a single-variable autoresearch keep/revert loop. numpy-only, host-agnostic (Claude Code + Codex manifests).",
       "version": "0.1.0",
       "author": {
         "name": "Tyrone Ross"
       },
-      "homepage": "https://github.com/tyroneross/multi-goal",
-      "repository": "https://github.com/tyroneross/multi-goal",
+      "homepage": "https://github.com/tyroneross/agent-doe-engine",
+      "repository": "https://github.com/tyroneross/agent-doe-engine",
       "license": "Apache-2.0",
       "category": "development",
       "keywords": [

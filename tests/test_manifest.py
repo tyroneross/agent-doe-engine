@@ -28,11 +28,11 @@ class ManifestTests(unittest.TestCase):
                 self.assertTrue(path.exists(), f"{manifest_name} {field} path missing: {path}")
 
     def test_advertised_commands_and_agents_present(self) -> None:
-        for cmd in ("multi-goal", "status", "doe"):
+        for cmd in ("agent-doe", "status", "doe"):
             self.assertTrue((ROOT / "commands" / f"{cmd}.md").exists(), f"command missing: {cmd}")
         for agent in ("optimize-runner", "overfitting-reviewer"):
             self.assertTrue((ROOT / "agents" / f"{agent}.md").exists(), f"agent missing: {agent}")
-        self.assertTrue((ROOT / "skills" / "multi-goal" / "SKILL.md").exists())
+        self.assertTrue((ROOT / "skills" / "agent-doe-engine" / "SKILL.md").exists())
 
 
 class CommandSurfaceTests(unittest.TestCase):

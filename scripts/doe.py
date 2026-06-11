@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: 2025-2026 Tyrone Ross, Jr <46267523+tyroneross@users.noreply.github.com>
 # SPDX-License-Identifier: Apache-2.0
-"""DOE matrix generation + effects analysis for multi-goal:optimize.
+"""DOE matrix generation + effects analysis for agent-doe-engine:optimize.
 
 Stdlib + numpy only. Provably equivalent to pyDOE3 1.6.2 for the three
 designs we care about (full factorial, fractional factorial, Plackett-Burman
-12-run) — verified by side-by-side comparison with off-diag(XᵀX)=0 and
+12-run) - verified by side-by-side comparison with off-diag(XᵀX)=0 and
 matching matrices up to row/column permutation.
 
 The `analyze` subcommand now supports multiple objectives. Pass --objectives
@@ -58,7 +58,7 @@ except ImportError:  # pragma: no cover
 
 
 # ---------------------------------------------------------------------------
-# Design generators (mirrors pyDOE3 — see tests/test_doe.py)
+# Design generators (mirrors pyDOE3 - see tests/test_doe.py)
 # ---------------------------------------------------------------------------
 
 def full_factorial_2level(k: int) -> np.ndarray:
@@ -161,7 +161,7 @@ def alias_structure(design: np.ndarray, factor_names: list[str] | None = None,
     """Compute the confounding structure of a 2-level design empirically.
 
     Two effects are aliased iff their ±1 model columns are identical up to
-    sign — that is the operational definition of confounding, independent of
+    sign - that is the operational definition of confounding, independent of
     how the design was generated. We enumerate the grand mean, all main
     effects, and all interactions up to `max_order`, group terms whose columns
     coincide, and read the resolution off the shortest defining-relation word.
@@ -227,7 +227,7 @@ def alias_structure(design: np.ndarray, factor_names: list[str] | None = None,
     alias_chains.sort(key=lambda c: (len(c[0]) if c else 0, c))
 
     # A design is non-regular (e.g. Plackett-Burman) when its columns are
-    # orthogonal yet no exact ±1 alias group / identity word exists — its
+    # orthogonal yet no exact ±1 alias group / identity word exists - its
     # confounding is fractional (partial), not full. Detect via off-diagonal
     # correlation between a main effect and any 2-way interaction column.
     partial_alias = False
@@ -260,7 +260,7 @@ def alias_structure(design: np.ndarray, factor_names: list[str] | None = None,
         return {
             "resolution": "III*",
             "resolution_int": 3,
-            "defining_relation": ["I (non-regular — no clean defining relation)"],
+            "defining_relation": ["I (non-regular - no clean defining relation)"],
             "alias_chains": [],
             "aliasing": True,
             "note": (
@@ -298,7 +298,7 @@ def alias_structure(design: np.ndarray, factor_names: list[str] | None = None,
                 "interactions are clear of each other.")
     else:
         note = ("Effects are aliased; see alias_chains. No clean defining "
-                "relation recovered — interpret confounded terms together.")
+                "relation recovered - interpret confounded terms together.")
 
     return {
         "resolution": resolution,
@@ -348,15 +348,15 @@ def _inference_verdict(error_df: int) -> tuple[str, list[str]]:
     """
     warnings: list[str] = []
     if error_df <= 0:
-        verdict = "saturated — no error df; effects are exact fits, not estimates"
+        verdict = "saturated - no error df; effects are exact fits, not estimates"
         warnings.append(
             "Saturated design: 0 error degrees of freedom. Standard errors, "
             "t-statistics, and p-values cannot be computed. Effect magnitudes "
-            "are exact fits to the data, not statistical estimates — add "
+            "are exact fits to the data, not statistical estimates - add "
             "replicates or drop terms to obtain an error estimate."
         )
     elif error_df <= 3:
-        verdict = f"low power — only {error_df} error df; directional only"
+        verdict = f"low power - only {error_df} error df; directional only"
         warnings.append(
             f"Low power: only {error_df} error degrees of freedom. p-values are "
             "unstable; treat significance as directional, not conclusive. Add "
@@ -641,9 +641,9 @@ def _collect_single_metric(lines: list[str], n: int
 
     Multiple rows with the same run_id are replicate measurements of the same
     design cell. Returns:
-      y            — per-cell mean response, length n (used for effect fitting)
-      cell_values  — cell_values[i] = list of replicate values at run i
-      total_obs    — total number of result rows seen
+      y            - per-cell mean response, length n (used for effect fitting)
+      cell_values  - cell_values[i] = list of replicate values at run i
+      total_obs    - total number of result rows seen
 
     Requires that every run_id in [0, n) is observed at least once.
     """

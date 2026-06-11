@@ -3,13 +3,13 @@
 
 # Usage
 
-Run as a Claude Code / Codex plugin (the `multi-goal` skill or `/multi-goal` command drives the flow), or call the scripts directly. All scripts are numpy-only; runtime state lives under `.multi-goal/optimize/` in the project being optimized.
+Run as a Claude Code / Codex plugin (the `agent-doe-engine` skill or `/agent-doe` command drives the flow), or call the scripts directly. All scripts are numpy-only; runtime state lives under `.agent-doe-engine/optimize/` in the project being optimized.
 
-## Worked example — optimize latency and cost together
+## Worked example - optimize latency and cost together
 
 Two factors (`workers`, `batch`), two competing objectives (latency should drop, cost should not balloon).
 
-### 1. Define objectives → `.multi-goal/optimize/objectives.json`
+### 1. Define objectives → `.agent-doe-engine/optimize/objectives.json`
 
 ```json
 {
@@ -21,7 +21,7 @@ Two factors (`workers`, `batch`), two competing objectives (latency should drop,
 }
 ```
 
-### 2. Define factors → `.multi-goal/optimize/factors.json`
+### 2. Define factors → `.agent-doe-engine/optimize/factors.json`
 
 ```json
 [
@@ -35,9 +35,9 @@ Two factors (`workers`, `batch`), two competing objectives (latency should drop,
 ```bash
 python3 scripts/doe.py detect 2        # -> "full"
 python3 scripts/doe.py generate \
-  --factors "$(cat .multi-goal/optimize/factors.json)" \
+  --factors "$(cat .agent-doe-engine/optimize/factors.json)" \
   --design auto --seed 1 \
-  > .multi-goal/optimize/doe.json
+  > .agent-doe-engine/optimize/doe.json
 ```
 
 ### 4. Run each row, measure both objectives
@@ -59,9 +59,9 @@ python3 scripts/metric_runner.py --cmd "python3 bench.py --stat p95" --samples 5
 
 ```bash
 python3 scripts/doe.py analyze \
-  --design .multi-goal/optimize/doe.json \
-  --results .multi-goal/optimize/results.jsonl \
-  --objectives .multi-goal/optimize/objectives.json
+  --design .agent-doe-engine/optimize/doe.json \
+  --results .agent-doe-engine/optimize/results.jsonl \
+  --objectives .agent-doe-engine/optimize/objectives.json
 ```
 
 Output (abridged):
@@ -81,7 +81,7 @@ Output (abridged):
 }
 ```
 
-`workers` is the dominant latency driver; the weighted pick favors low latency (weight 0.7) at higher cost. The `pareto_front` `[1, 3]` shows the two rational trade-offs — switch `selection` to `pareto` to choose between them yourself.
+`workers` is the dominant latency driver; the weighted pick favors low latency (weight 0.7) at higher cost. The `pareto_front` `[1, 3]` shows the two rational trade-offs - switch `selection` to `pareto` to choose between them yourself.
 
 ## Single-objective / single-factor
 

@@ -19,9 +19,9 @@ Output: JSON list of candidates ranked by signal strength:
     "suggested_levels": [16, 32, 64], "confidence": "high",
     "why": "UPPER_SNAKE constant + 'batch' keyword + 5 references"}, ...]
 
-This is a heuristic scanner — it will miss factors and may suggest
+This is a heuristic scanner - it will miss factors and may suggest
 non-tunable values. Output is meant to be confirmed by the user before
-running multi-goal optimization.
+running agent-doe-engine optimization.
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ SKIP_DIRS = {
     "node_modules", ".git", "dist", "build", ".next", ".nuxt",
     "__pycache__", ".pytest_cache", ".cache", "coverage",
     ".venv", "venv", "env", "target", ".bookmark", ".navgator",
-    ".multi-goal", ".claude-code-debugger", "vendor",
+    ".agent-doe-engine", ".multi-goal", ".claude-code-debugger", "vendor",
 }
 
 # Keywords that suggest a numeric value is tunable
@@ -234,7 +234,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Mark high-confidence candidates with `needs_research: true` so the "
              "calling skill can opt in to consulting the host's research capability for "
              "best-practice level suggestions. The script itself never calls "
-             "research — it only flags candidates worth researching. The "
+             "research - it only flags candidates worth researching. The "
              "orchestrator decides whether to invoke the research capability based "
              "on user confirmation. Off by default.",
     )

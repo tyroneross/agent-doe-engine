@@ -4,6 +4,7 @@ __pycache__/
 .venv/
 node_modules/
 .DS_Store
+.agent-doe-engine/
 .multi-goal/
 .build-loop/
 .archive/

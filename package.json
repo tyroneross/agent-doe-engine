@@ -1,7 +1,7 @@
 {
-  "name": "@tyroneross/multi-goal",
+  "name": "@tyroneross/agent-doe-engine",
   "version": "0.1.0",
-  "description": "Multi-objective Design of Experiments optimizer for competing software metrics, with scalarization, desirability, Pareto selection, and plugin surfaces.",
+  "description": "A design-of-experiments engine for tuning AI agents: competing-metric optimization with scalarization, desirability, Pareto selection, and plugin surfaces.",
   "type": "commonjs",
   "files": [
     "agents/",
@@ -25,6 +25,7 @@
     "pack:check": "npm pack --dry-run --registry https://registry.npmjs.org"
   },
   "keywords": [
+    "agent-tuning",
     "multi-objective",
     "optimization",
     "design-of-experiments",
@@ -39,11 +40,11 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/tyroneross/multi-goal.git"
+    "url": "git+https://github.com/tyroneross/agent-doe-engine.git"
   },
-  "homepage": "https://github.com/tyroneross/multi-goal#readme",
+  "homepage": "https://github.com/tyroneross/agent-doe-engine#readme",
   "bugs": {
-    "url": "https://github.com/tyroneross/multi-goal/issues"
+    "url": "https://github.com/tyroneross/agent-doe-engine/issues"
   },
   "publishConfig": {
     "access": "public",

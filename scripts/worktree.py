@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: 2025-2026 Tyrone Ross, Jr <46267523+tyroneross@users.noreply.github.com>
 # SPDX-License-Identifier: Apache-2.0
-"""multi-goal worktree helper — every run lives in its own dedicated worktree.
+"""agent-doe-engine worktree helper - every run lives in its own dedicated worktree.
 
 Stdlib only.
 
-Multi-goal must NEVER mutate the user's primary checkout of the target
+agent-doe-engine must NEVER mutate the user's primary checkout of the target
 repo. DOE applies + reverts factor values across many runs; even with a
 clean revert, leaving the work in `main` (or whatever branch the user
 was on) risks dirtying state, intermixing commits, and trashing
@@ -13,10 +13,10 @@ in-progress work.
 
 This helper exposes three subcommands the skill calls:
 
-    init    Create (or reuse) the worktree at <repo>-multigoal-<slug>
-            on branch `multigoal/<slug>`. Prints the worktree path
+    init    Create (or reuse) the worktree at <repo>-agent-doe-engine-<slug>
+            on branch `agent-doe-engine/<slug>`. Prints the worktree path
             (the host LLM should `cd` there before running the rest of
-            the multi-goal flow).
+            the agent-doe-engine flow).
     info    Print the resolved worktree path and branch for <slug>
             (returns exit 1 if not initialized).
     cleanup Remove the worktree (and optionally its branch) after the
@@ -25,7 +25,7 @@ This helper exposes three subcommands the skill calls:
 The slug is the target name the user supplied (e.g. "build-time",
 "latency-and-cost"). Slugs are normalized to lowercase kebab-case.
 
-This helper does NOT change directory itself — it prints the path so
+This helper does NOT change directory itself - it prints the path so
 the host LLM can issue an explicit `cd` in its next tool call. Helper
 side-effects stay confined to `git worktree` operations.
 """
@@ -69,12 +69,12 @@ class WorktreeRef:
 
     @property
     def branch(self) -> str:
-        return f"multigoal/{self.slug}"
+        return f"agent-doe-engine/{self.slug}"
 
     @property
     def path(self) -> Path:
-        # Sibling directory: `<repo-name>-multigoal-<slug>` alongside the source repo
-        return (self.repo_root.parent / f"{self.repo_root.name}-multigoal-{self.slug}").resolve()
+        # Sibling directory: `<repo-name>-agent-doe-engine-<slug>` alongside the source repo
+        return (self.repo_root.parent / f"{self.repo_root.name}-agent-doe-engine-{self.slug}").resolve()
 
 
 def _resolve(p: str | Path) -> Path:
@@ -136,7 +136,7 @@ def init_worktree(ref: WorktreeRef, base_ref: str = "HEAD") -> dict:
 
     if ref.path.exists():
         raise RuntimeError(
-            f"path {ref.path} already exists but is not a registered worktree — "
+            f"path {ref.path} already exists but is not a registered worktree - "
             "remove it or pick a different slug"
         )
 
@@ -222,7 +222,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     sub = p.add_subparsers(dest="cmd", required=True)
-    sub_init = sub.add_parser("init", help="create or reuse the multi-goal worktree")
+    sub_init = sub.add_parser("init", help="create or reuse the agent-doe-engine worktree")
     sub_init.add_argument(
         "--base", default="HEAD",
         help="ref to branch from when the worktree branch is new (default: HEAD)",
@@ -231,7 +231,7 @@ def main(argv: list[str] | None = None) -> int:
     sub_cleanup = sub.add_parser("cleanup", help="remove the worktree after the run")
     sub_cleanup.add_argument(
         "--delete-branch", action="store_true",
-        help="also delete the multigoal/<slug> branch",
+        help="also delete the agent-doe-engine/<slug> branch",
     )
     sub_cleanup.add_argument(
         "--force", action="store_true",

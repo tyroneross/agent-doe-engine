@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: 2025-2026 Tyrone Ross, Jr <46267523+tyroneross@users.noreply.github.com>
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for worktree.py — init, info, cleanup, slug normalization, reuse paths.
+"""Tests for worktree.py - init, info, cleanup, slug normalization, reuse paths.
 
 Each test creates a real throw-away git repo in a temp dir and exercises
 the helper end-to-end. Stdlib only.
@@ -70,7 +70,7 @@ class InitTests(unittest.TestCase):
             ref = worktree.WorktreeRef(repo_root=repo, slug="build-time")
             r = worktree.init_worktree(ref)
             self.assertTrue(r["created"])
-            self.assertEqual(r["branch"], "multigoal/build-time")
+            self.assertEqual(r["branch"], "agent-doe-engine/build-time")
             self.assertTrue(Path(r["path"]).is_dir())
             self.assertTrue((Path(r["path"]) / "README.md").exists())
 
@@ -114,7 +114,7 @@ class InfoTests(unittest.TestCase):
             worktree.init_worktree(ref)
             r = worktree.info_worktree(ref)
             self.assertTrue(r["exists"])
-            self.assertEqual(r["branch"], "multigoal/here")
+            self.assertEqual(r["branch"], "agent-doe-engine/here")
 
 
 class CleanupTests(unittest.TestCase):
@@ -137,7 +137,7 @@ class CleanupTests(unittest.TestCase):
             r = worktree.cleanup_worktree(ref, delete_branch=True)
             self.assertTrue(r["removed"])
             self.assertTrue(r["branch_deleted"])
-            self.assertFalse(worktree.branch_exists(repo, "multigoal/drop"))
+            self.assertFalse(worktree.branch_exists(repo, "agent-doe-engine/drop"))
 
     def test_cleanup_on_absent_is_noop(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -161,7 +161,7 @@ class CliTests(unittest.TestCase):
             )
             self.assertEqual(r.returncode, 0, msg=r.stderr)
             init_out = json.loads(r.stdout)
-            self.assertEqual(init_out["branch"], "multigoal/build-time")
+            self.assertEqual(init_out["branch"], "agent-doe-engine/build-time")
 
             r = subprocess.run(
                 [sys.executable, str(SCRIPT), "--workdir", str(repo),

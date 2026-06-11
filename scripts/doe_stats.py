@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: 2025-2026 Tyrone Ross, Jr <46267523+tyroneross@users.noreply.github.com>
 # SPDX-License-Identifier: Apache-2.0
-"""Hand-rolled statistical inference for DOE effects — stdlib + numpy only.
+"""Hand-rolled statistical inference for DOE effects - stdlib + numpy only.
 
-multi-goal is deliberately numpy-only (no scipy / statsmodels). This module
+agent-doe-engine is deliberately numpy-only (no scipy / statsmodels). This module
 implements, by hand:
 
   - the regularized incomplete beta function I_x(a, b) via the Lentz
@@ -24,7 +24,7 @@ and the two-sided p-value for a t-statistic with `df` degrees of freedom is
 
     p = I_{x}(df/2, 1/2),                     x = df / (df + t²)
 
-which needs only `math.lgamma` + a continued fraction — no scipy.
+which needs only `math.lgamma` + a continued fraction - no scipy.
 """
 
 from __future__ import annotations
@@ -231,7 +231,7 @@ def coef_standard_errors(X: np.ndarray, error_var: float) -> np.ndarray:
     """Per-coefficient standard errors: SE_j = sqrt(error_var · (XᵀX)⁻¹_jj).
 
     For an orthogonal coded design every (XᵀX)⁻¹ diagonal entry is 1/n, so
-    SE is constant across coefficients — but we compute the full inverse so
+    SE is constant across coefficients - but we compute the full inverse so
     non-orthogonal / truncated designs stay correct.
     """
     xtx = X.T @ X
