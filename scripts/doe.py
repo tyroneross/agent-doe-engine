@@ -45,6 +45,7 @@ from pathlib import Path
 # Robust import of objectives.py regardless of CWD
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import objectives  # noqa: E402
+import doe_stats  # noqa: E402
 
 try:
     import numpy as np
@@ -143,10 +144,13 @@ def build_design(k: int, design_type: str) -> tuple[np.ndarray, str]:
 # Effects analyzer
 # ---------------------------------------------------------------------------
 
-def fit_effects(design: np.ndarray, y: np.ndarray, include_interactions: bool = True
-                ) -> dict:
-    """Fit y ~ intercept + main + (optional) 2-way interactions via OLS.
-    Returns ranked dict with intercept, main effects, and interactions."""
+def _design_matrix(design: np.ndarray, include_interactions: bool
+                   ) -> tuple[np.ndarray, list]:
+    """Build the OLS design matrix X and its term labels.
+
+    labels[0] == "intercept"; the rest are ("main", i) or ("inter", (i, j)).
+    Truncates to a solvable column count when the model is over-parameterized.
+    """
     n, k = design.shape
     cols = [np.ones(n)]
     labels: list = ["intercept"]
@@ -160,49 +164,189 @@ def fit_effects(design: np.ndarray, y: np.ndarray, include_interactions: bool = 
                 labels.append(("inter", (i, j)))
     X = np.column_stack(cols)
     if X.shape[1] > X.shape[0]:
-        # Underdetermined; truncate to what we can solve
         X = X[:, : X.shape[0]]
         labels = labels[: X.shape[0]]
+    return X, labels
+
+
+def _inference_verdict(error_df: int) -> tuple[str, list[str]]:
+    """Map error degrees of freedom → a plain-language trust verdict + warnings.
+
+    The verdict tells consumers whether the p-values are estimates they can
+    trust, directional-only, or absent (exact fit). It is the headline trust
+    signal that stops over-reading effect magnitude on a saturated design.
+    """
+    warnings: list[str] = []
+    if error_df <= 0:
+        verdict = "saturated — no error df; effects are exact fits, not estimates"
+        warnings.append(
+            "Saturated design: 0 error degrees of freedom. Standard errors, "
+            "t-statistics, and p-values cannot be computed. Effect magnitudes "
+            "are exact fits to the data, not statistical estimates — add "
+            "replicates or drop terms to obtain an error estimate."
+        )
+    elif error_df <= 3:
+        verdict = f"low power — only {error_df} error df; directional only"
+        warnings.append(
+            f"Low power: only {error_df} error degrees of freedom. p-values are "
+            "unstable; treat significance as directional, not conclusive. Add "
+            "replicates to strengthen the error estimate."
+        )
+    else:
+        verdict = "ok"
+    return verdict, warnings
+
+
+def fit_effects(design: np.ndarray, y: np.ndarray, include_interactions: bool = True,
+                cell_values: list[list[float]] | None = None) -> dict:
+    """Fit y ~ intercept + main + (optional) 2-way interactions via OLS, with
+    per-effect statistical inference.
+
+    Args:
+      design: ±1 coded design matrix, shape (n_cells, k).
+      y:      per-cell response (the cell MEAN when replicated), length n_cells.
+      cell_values: optional list aligned to design rows; cell_values[i] is the
+        list of replicate measurements at cell i. When any cell has ≥2
+        replicates the error term is the pooled within-cell "pure error"
+        (the statistically correct denominator for a stochastic response).
+        When None or no cell is replicated, the error term is the OLS residual.
+
+    Returns a dict carrying per-effect statistics (SE, t, p, 95% CI) keyed the
+    same way as the legacy `main`/`interactions` point estimates, plus
+    `residual_df`, `pure_error_df`, `error_var`, `inference`, and `warnings`.
+    Backward compatible: callers passing only (design, y) keep working and now
+    additionally receive inference based on the residual error term.
+    """
+    n, k = design.shape
+    X, labels = _design_matrix(design, include_interactions)
+    p_terms = X.shape[1]
     beta, residuals, rank, _ = np.linalg.lstsq(X, y, rcond=None)
+
     intercept = float(beta[0])
     main_effects = {labels[i][1]: float(beta[i]) for i in range(1, len(labels))
                     if labels[i][0] == "main"}
     inter_effects = {labels[i][1]: float(beta[i]) for i in range(1, len(labels))
                      if labels[i][0] == "inter"}
-    # Variance explained: total ss minus residual ss
-    y_var = float(np.var(y) * n)
-    if rank == X.shape[1] and len(residuals) > 0:
-        residual_ss = float(residuals[0])
-        r2 = 1.0 - residual_ss / y_var if y_var > 0 else 1.0
+
+    # ---- Error term selection -------------------------------------------
+    # Residual term from the model fit (always available, may have 0 df).
+    fitted = X @ beta
+    residual_ss = float(np.sum((y - fitted) ** 2))
+    residual_df = int(n - rank)
+
+    pure_error_var, pure_error_df = (0.0, 0)
+    if cell_values is not None:
+        pure_error_var, pure_error_df = doe_stats.pooled_pure_error(cell_values)
+
+    if pure_error_df > 0:
+        # Replicated design: pure error is the correct denominator.
+        error_var = pure_error_var
+        error_df = pure_error_df
+        error_source = "pure_error"
+    elif residual_df > 0:
+        error_var = residual_ss / residual_df
+        error_df = residual_df
+        error_source = "residual"
     else:
-        r2 = None  # saturated, no degrees of freedom for residual
+        # Saturated: no error df at all.
+        error_var = 0.0
+        error_df = 0
+        error_source = "none"
+
+    # ---- Variance explained (r²) ----------------------------------------
+    y_var = float(np.var(y) * n)
+    if residual_df >= 0 and y_var > 0 and rank == p_terms:
+        r2 = 1.0 - residual_ss / y_var
+    elif y_var <= 0:
+        r2 = 1.0
+    else:
+        r2 = None
+
+    # ---- Per-coefficient inference --------------------------------------
+    verdict, warnings = _inference_verdict(error_df)
+    if error_df <= 0 and pure_error_df == 0 and cell_values is not None:
+        warnings.append(
+            "No replicated cells found: error estimate falls back to OLS "
+            "residual. For a stochastic/LLM response, add replicate runs so "
+            "significance rests on measured pure error, not model residual."
+        )
+
+    if error_df > 0:
+        ses = doe_stats.coef_standard_errors(X, error_var)
+        t_crit = doe_stats.t_ppf(0.975, error_df)
+    else:
+        ses = np.full(p_terms, float("nan"))
+        t_crit = float("nan")
+
+    def _stat(idx: int) -> dict:
+        coef = float(beta[idx])
+        se = float(ses[idx])
+        if error_df > 0 and se > 0:
+            t = coef / se
+            p = float(doe_stats.t_sf_two_sided(t, error_df))
+            ci = [coef - t_crit * se, coef + t_crit * se]
+            significant = p < 0.05
+        else:
+            t = p = float("nan")
+            ci = [float("nan"), float("nan")]
+            significant = None
+        return {"se": se, "t": t, "p_value": p, "ci95": ci,
+                "significant": significant}
+
+    intercept_stats = _stat(0)
+    main_stats = {labels[i][1]: _stat(i) for i in range(1, len(labels))
+                  if labels[i][0] == "main"}
+    inter_stats = {labels[i][1]: _stat(i) for i in range(1, len(labels))
+                   if labels[i][0] == "inter"}
+
     return {
         "intercept": intercept,
         "main": main_effects,
         "interactions": inter_effects,
+        "intercept_stats": intercept_stats,
+        "main_stats": main_stats,
+        "inter_stats": inter_stats,
         "r2": r2,
         "n_runs": n,
         "n_factors": k,
+        "residual_df": residual_df,
+        "pure_error_df": pure_error_df,
+        "error_df": error_df,
+        "error_var": error_var,
+        "error_source": error_source,
+        "inference": verdict,
+        "warnings": warnings,
     }
 
 
 def rank_findings(effects: dict, factor_names: list[str]) -> list[dict]:
-    """Sort effects by absolute magnitude with human-readable labels."""
+    """Sort effects by absolute magnitude with human-readable labels.
+
+    Each row now carries the per-effect trust signals (se, t, p_value, ci95,
+    significant) so a consumer ranking by magnitude can still see whether the
+    top effect is statistically distinguishable from noise.
+    """
+    main_stats = effects.get("main_stats", {})
+    inter_stats = effects.get("inter_stats", {})
     rows = []
     for idx, val in effects["main"].items():
-        rows.append({
+        row = {
             "term": factor_names[idx],
             "kind": "main",
             "effect": val,
             "abs_effect": abs(val),
-        })
+        }
+        row.update(main_stats.get(idx, {}))
+        rows.append(row)
     for (i, j), val in effects["interactions"].items():
-        rows.append({
+        row = {
             "term": f"{factor_names[i]} × {factor_names[j]}",
             "kind": "interaction",
             "effect": val,
             "abs_effect": abs(val),
-        })
+        }
+        row.update(inter_stats.get((i, j), {}))
+        rows.append(row)
     rows.sort(key=lambda r: -r["abs_effect"])
     return rows
 
