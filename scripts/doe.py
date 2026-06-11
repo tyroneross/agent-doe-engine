@@ -389,7 +389,8 @@ def fit_effects(design: np.ndarray, y: np.ndarray, include_interactions: bool = 
     n, k = design.shape
     X, labels = _design_matrix(design, include_interactions)
     p_terms = X.shape[1]
-    beta, residuals, rank, _ = np.linalg.lstsq(X, y, rcond=None)
+    beta, _resid, rank, _ = np.linalg.lstsq(X, y, rcond=None)
+    rank = int(rank)
 
     intercept = float(beta[0])
     main_effects = {labels[i][1]: float(beta[i]) for i in range(1, len(labels))
