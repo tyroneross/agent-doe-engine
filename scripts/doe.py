@@ -614,6 +614,78 @@ def _load_objectives_arg(arg_objectives: str | None, arg_selection: str | None
     return obj_list, selection
 
 
+def _collect_single_metric(lines: list[str], n: int
+                           ) -> tuple[np.ndarray, list[list[float]], int]:
+    """Parse legacy {run_id, value} JSONL, grouping replicates by run_id.
+
+    Multiple rows with the same run_id are replicate measurements of the same
+    design cell. Returns:
+      y            — per-cell mean response, length n (used for effect fitting)
+      cell_values  — cell_values[i] = list of replicate values at run i
+      total_obs    — total number of result rows seen
+
+    Requires that every run_id in [0, n) is observed at least once.
+    """
+    cells: dict[int, list[float]] = {i: [] for i in range(n)}
+    total_obs = 0
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        row = json.loads(line)
+        rid = int(row["run_id"])
+        if rid not in cells:
+            raise ValueError(f"run_id {rid} out of range [0,{n})")
+        cells[rid].append(float(row["value"]))
+        total_obs += 1
+    missing = [i for i in range(n) if not cells[i]]
+    if missing:
+        raise ValueError(f"no results for run_id(s) {missing}")
+    cell_values = [cells[i] for i in range(n)]
+    y = np.array([float(np.mean(cells[i])) for i in range(n)])
+    return y, cell_values, total_obs
+
+
+def _collect_multi_metric(rows: list[dict], obj_names: list[str], n: int
+                          ) -> tuple[dict[str, np.ndarray], dict[str, list[list[float]]],
+                                     dict[int, dict], int]:
+    """Group multi-objective result rows by run_id, supporting replicates.
+
+    Returns per-objective (y_mean vector, cell_values), a representative row per
+    run_id (cell-mean values, for selection), and the total observation count.
+    """
+    cells: dict[int, list[dict]] = {i: [] for i in range(n)}
+    total_obs = 0
+    for row in rows:
+        rid = int(row["run_id"])
+        if rid not in cells:
+            raise ValueError(f"run_id {rid} out of range [0,{n})")
+        cells[rid].append(row)
+        total_obs += 1
+    missing = [i for i in range(n) if not cells[i]]
+    if missing:
+        raise ValueError(f"no results for run_id(s) {missing}")
+
+    y_by_obj: dict[str, np.ndarray] = {}
+    cellvals_by_obj: dict[str, list[list[float]]] = {}
+    for name in obj_names:
+        per_cell_vals = [
+            [float(r["values"][name]) for r in cells[i]] for i in range(n)
+        ]
+        cellvals_by_obj[name] = per_cell_vals
+        y_by_obj[name] = np.array([float(np.mean(v)) for v in per_cell_vals])
+
+    # Representative (cell-mean) row per run_id for objectives.select_best.
+    mean_rows: dict[int, dict] = {}
+    for i in range(n):
+        mean_rows[i] = {
+            "run_id": i,
+            "values": {name: float(np.mean([float(r["values"][name]) for r in cells[i]]))
+                       for name in obj_names},
+        }
+    return y_by_obj, cellvals_by_obj, mean_rows, total_obs
+
+
 def cmd_analyze(args: argparse.Namespace) -> int:
     design_data = json.loads(Path(args.design).read_text())
     matrix = np.array(design_data["matrix"], dtype=float)
@@ -634,20 +706,20 @@ def cmd_analyze(args: argparse.Namespace) -> int:
         sys.stderr.write(f"--objectives parse error: {exc}\n")
         return 2
 
+    aliasing = alias_structure(matrix, factor_names=factor_names)
+
     if obj_list is None:
-        # ---- Backward-compatible single-metric path (UNCHANGED) --------
-        results: dict[int, float] = {}
-        for line in Path(args.results).read_text().splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            row = json.loads(line)
-            results[int(row["run_id"])] = float(row["value"])
-        if len(results) != n:
-            sys.stderr.write(f"need {n} results, got {len(results)}\n")
+        # ---- Backward-compatible single-metric path (now replicate-aware) ---
+        try:
+            y, cell_values, total_obs = _collect_single_metric(
+                Path(args.results).read_text().splitlines(), n
+            )
+        except (ValueError, KeyError) as exc:
+            sys.stderr.write(f"results parse error: {exc}\n")
             return 2
-        y = np.array([results[i] for i in range(n)])
-        effects = fit_effects(matrix, y, include_interactions=include_interactions)
+        n_replicated = sum(1 for c in cell_values if len(c) > 1)
+        effects = fit_effects(matrix, y, include_interactions=include_interactions,
+                              cell_values=cell_values)
         findings = rank_findings(effects, factor_names)
         direction = args.direction or "lower"
         best_run_idx = int(np.argmin(y)) if direction == "lower" else int(np.argmax(y))
@@ -662,12 +734,22 @@ def cmd_analyze(args: argparse.Namespace) -> int:
                 "design_type": design_data["design"]["type"],
                 "n_runs": n,
                 "n_factors": k,
+                "n_observations": total_obs,
+                "n_replicated_cells": n_replicated,
                 "r2": effects["r2"],
                 "intercept": effects["intercept"],
+                "intercept_stats": effects["intercept_stats"],
+                "residual_df": effects["residual_df"],
+                "pure_error_df": effects["pure_error_df"],
+                "error_df": effects["error_df"],
+                "error_source": effects["error_source"],
+                "inference": effects["inference"],
             },
+            "warnings": effects["warnings"],
+            "aliasing": aliasing,
             "ranked_effects": findings,
             "best_run": best_run_idx,
-            "best_value": float(np.min(y)) if direction == "lower" else float(np.max(y)),
+            "best_value": float(y[best_run_idx]),
             "direction": direction,
         }
         if best_factors is not None:
@@ -698,36 +780,44 @@ def cmd_analyze(args: argparse.Namespace) -> int:
                    "guard_ok": row.get("guard_ok", True)}
         raw_results.append(row)
 
-    if len(raw_results) != n:
-        sys.stderr.write(f"need {n} results, got {len(raw_results)}\n")
+    obj_names = [o["name"] for o in obj_list]
+    try:
+        y_by_obj, cellvals_by_obj, mean_rows, total_obs = _collect_multi_metric(
+            raw_results, obj_names, n
+        )
+    except (ValueError, KeyError) as exc:
+        sys.stderr.write(f"results parse error: {exc}\n")
         return 2
 
-    # Build lookup: run_id -> row
-    results_by_id: dict[int, dict] = {int(r["run_id"]): r for r in raw_results}
-
-    # Per-objective effects analysis
+    # Per-objective effects analysis (replicate-aware: pure error per objective)
     per_objective: dict[str, dict] = {}
+    any_replicated = False
     for obj in obj_list:
         obj_name = obj["name"]
         direction = obj.get("direction", "lower")
-        y_obj = np.array([
-            float(results_by_id[i]["values"][obj_name]) for i in range(n)
-        ])
-        eff = fit_effects(matrix, y_obj, include_interactions=include_interactions)
+        cell_values = cellvals_by_obj[obj_name]
+        if any(len(c) > 1 for c in cell_values):
+            any_replicated = True
+        eff = fit_effects(matrix, y_by_obj[obj_name],
+                          include_interactions=include_interactions,
+                          cell_values=cell_values)
         findings = rank_findings(eff, factor_names)
         per_objective[obj_name] = {
             "ranked_effects": findings,
             "r2": eff["r2"],
             "intercept": eff["intercept"],
+            "intercept_stats": eff["intercept_stats"],
             "direction": direction,
+            "residual_df": eff["residual_df"],
+            "pure_error_df": eff["pure_error_df"],
+            "error_df": eff["error_df"],
+            "error_source": eff["error_source"],
+            "inference": eff["inference"],
+            "warnings": eff["warnings"],
         }
 
-    # Build runs list for objectives.select_best
-    runs_for_selection = [
-        {"run_id": int(results_by_id[i]["run_id"]),
-         "values": {k_: float(v) for k_, v in results_by_id[i]["values"].items()}}
-        for i in range(n)
-    ]
+    # Build runs list for objectives.select_best (cell means when replicated)
+    runs_for_selection = [mean_rows[i] for i in range(n)]
 
     try:
         sel_result = objectives.select_best(runs_for_selection, obj_list, selection)
@@ -750,8 +840,11 @@ def cmd_analyze(args: argparse.Namespace) -> int:
             "design_type": design_data["design"]["type"],
             "n_runs": n,
             "n_factors": k,
+            "n_observations": total_obs,
+            "replicated": any_replicated,
             "selection": selection,
         },
+        "aliasing": aliasing,
         "per_objective": per_objective,
         "selection": sel_result,
         "best_run": best_run_id,
