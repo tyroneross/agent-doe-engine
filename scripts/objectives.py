@@ -64,6 +64,7 @@ def compute_bounds(runs: list[dict], objectives: list[dict]) -> dict:
     Raises ValueError if a run is missing an objective's value.
     """
     obj_names = [o["name"] for o in objectives]
+    obj_by_name = {o["name"]: o for o in objectives}
     bounds: dict[str, dict[str, float]] = {}
 
     for name in obj_names:
@@ -75,7 +76,22 @@ def compute_bounds(runs: list[dict], objectives: list[dict]) -> dict:
                     f"Run {run.get('run_id', '?')} missing value for objective '{name}'"
                 )
             values.append(float(run_vals[name]))
-        bounds[name] = {"min": min(values), "max": max(values)}
+        lo, hi = min(values), max(values)
+        floor = obj_by_name[name].get("noise_floor")
+        if floor is not None and (hi - lo) <= float(floor):
+            # The observed spread is inside this objective's noise. Min-max
+            # normalisation would stretch that spread to fill [0,1] just as
+            # fully as a real one, letting a meaningless wobble veto a run that
+            # is better on every other objective - and under `desirability`,
+            # zero it outright. Collapse the range instead: normalize() returns
+            # a constant 1.0 when hi == lo, so the objective stops swinging the
+            # selection while its raw values are still reported.
+            mid = (hi + lo) / 2.0
+            bounds[name] = {"min": mid, "max": mid, "degenerate": True,
+                            "observed_min": lo, "observed_max": hi,
+                            "noise_floor": float(floor)}
+        else:
+            bounds[name] = {"min": lo, "max": hi}
 
     return bounds
 
@@ -213,6 +229,13 @@ def select_best(
 
     bounds = compute_bounds(runs, objectives)
     front = pareto_front(runs, objectives)
+    warnings = [
+        (f"Objective '{name}' varied by "
+         f"{b['observed_max'] - b['observed_min']:.6g} across these runs, at or "
+         f"below its declared noise_floor of {b['noise_floor']:.6g}. It was held "
+         f"constant so it cannot decide the winner; its raw values are unchanged.")
+        for name, b in bounds.items() if b.get("degenerate")
+    ]
 
     # --- compute per-run scores -------------------------------------------
     if method == "scalarize":
@@ -253,6 +276,7 @@ def select_best(
         "best_score": best_score,
         "pareto_front": front,
         "best_values": best_values,
+        "warnings": warnings,
     }
 
 

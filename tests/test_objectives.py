@@ -335,7 +335,7 @@ class TestSelectBest:
         result = select_best(FOUR_RUNS, TWO_OBJ, method="scalarize")
         expected_keys = {
             "method", "bounds", "scores", "best_run_id",
-            "best_score", "pareto_front", "best_values",
+            "best_score", "pareto_front", "best_values", "warnings",
         }
         assert expected_keys == self._result_keys(result)
 
@@ -343,7 +343,7 @@ class TestSelectBest:
         result = select_best(FOUR_RUNS, TWO_OBJ, method="desirability")
         expected_keys = {
             "method", "bounds", "scores", "best_run_id",
-            "best_score", "pareto_front", "best_values",
+            "best_score", "pareto_front", "best_values", "warnings",
         }
         assert expected_keys == self._result_keys(result)
 
@@ -351,7 +351,7 @@ class TestSelectBest:
         result = select_best(FOUR_RUNS, TWO_OBJ, method="pareto")
         expected_keys = {
             "method", "bounds", "scores", "best_run_id",
-            "best_score", "pareto_front", "best_values",
+            "best_score", "pareto_front", "best_values", "warnings",
         }
         assert expected_keys == self._result_keys(result)
 
@@ -526,3 +526,67 @@ class TestBaselineAggregate:
         r1 = baseline_aggregate(values, baseline, objs_2_2)
         r2 = baseline_aggregate(values, baseline, objs_1_1)
         assert r1 == pytest.approx(r2)
+
+
+class TestNoiseFloor:
+    """A sub-noise wobble on one objective must not decide the winner.
+
+    Regression guard for a demonstrated defect: min-max normalisation stretches
+    whatever range it observes to fill [0,1], so a 0.05% wobble on one
+    objective normalises exactly as fully as a real spread on another. Under
+    `desirability` the geometric mean then scores the batch-minimum run at 0.0,
+    tying a run that is best on two of three objectives with the worst run.
+    """
+
+    # run 7 is best on latency AND temp, and loses only on a 0.0005 recall wobble
+    RUNS = [
+        {"run_id": 6, "values": {"latency_ms": 90.0, "recall": 0.9823, "temp": 80.0}},
+        {"run_id": 7, "values": {"latency_ms": 45.0, "recall": 0.9818, "temp": 75.0}},
+    ]
+    OBJS_NO_FLOOR = [
+        {"name": "latency_ms", "direction": "lower",  "weight": 0.4},
+        {"name": "recall",     "direction": "higher", "weight": 0.4},
+        {"name": "temp",       "direction": "lower",  "weight": 0.2},
+    ]
+    OBJS_WITH_FLOOR = [
+        {"name": "latency_ms", "direction": "lower",  "weight": 0.4},
+        {"name": "recall",     "direction": "higher", "weight": 0.4,
+         "noise_floor": 0.01},
+        {"name": "temp",       "direction": "lower",  "weight": 0.2},
+    ]
+
+    def test_without_a_floor_desirability_zeroes_the_better_run(self):
+        # The defect this exists to correct. Run 7 is better on latency (45 vs
+        # 90) and on temp (75 vs 80), and loses only a 0.0005 wobble on recall.
+        # Desirability is a geometric mean, so one d_i of 0.0 forces D = 0.0 --
+        # scoring the better run identically to the worst run in the batch.
+        r = select_best(self.RUNS, self.OBJS_NO_FLOOR, method="desirability")
+        by_id = {s["run_id"]: s["score"] for s in r["scores"]}
+        assert by_id[7] == 0.0
+        assert r["best_run_id"] == 6
+
+    def test_floor_hands_the_win_to_the_genuinely_better_run(self):
+        r = select_best(self.RUNS, self.OBJS_WITH_FLOOR, method="scalarize")
+        assert r["best_run_id"] == 7
+
+    def test_desirability_no_longer_zeroes_the_better_run(self):
+        r = select_best(self.RUNS, self.OBJS_WITH_FLOOR, method="desirability")
+        by_id = {s["run_id"]: s["score"] for s in r["scores"]}
+        assert by_id[7] > 0.0
+        assert r["best_run_id"] == 7
+
+    def test_collapsed_objective_is_reported_not_hidden(self):
+        r = select_best(self.RUNS, self.OBJS_WITH_FLOOR, method="scalarize")
+        assert r["bounds"]["recall"].get("degenerate") is True
+        assert any("recall" in w for w in r["warnings"])
+        # raw measurements are untouched
+        assert r["best_values"]["recall"] == 0.9818
+
+    def test_real_spread_above_the_floor_still_counts(self):
+        runs = [
+            {"run_id": 1, "values": {"latency_ms": 90.0, "recall": 0.60, "temp": 80.0}},
+            {"run_id": 2, "values": {"latency_ms": 45.0, "recall": 0.99, "temp": 75.0}},
+        ]
+        r = select_best(runs, self.OBJS_WITH_FLOOR, method="scalarize")
+        assert r["bounds"]["recall"].get("degenerate") is not True
+        assert r["best_run_id"] == 2

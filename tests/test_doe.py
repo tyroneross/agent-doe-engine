@@ -850,3 +850,80 @@ class ReplicateCliTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class DegenerateFitTests(unittest.TestCase):
+    """A residual at floating-point zero is not an error estimate.
+
+    Regression guard for a real defect: a 5-factor / 8-run fit whose response
+    the model reproduces exactly reported standard errors around 1e-16 and
+    p-values around 1e-31, flagged `significant: true`. Three of those
+    "significant" terms were one aliased estimate wearing three names.
+    """
+
+    def _perfect_five_factor(self):
+        d = doe.fracfact(doe.FRACFACT_8_RUN[5])
+        # Response is an exact linear function of the columns: zero residual.
+        y = 0.65 + 0.0875 * d[:, 0] + 0.0875 * d[:, 1] - 0.0875 * d[:, 2]
+        return d, y
+
+    def test_degenerate_fit_is_flagged(self) -> None:
+        d, y = self._perfect_five_factor()
+        e = doe.fit_effects(d, y, include_interactions=False)
+        self.assertTrue(e["degenerate_fit"])
+
+    def test_degenerate_fit_withholds_significance(self) -> None:
+        d, y = self._perfect_five_factor()
+        e = doe.fit_effects(d, y, include_interactions=False)
+        for name, st in e["main_stats"].items():
+            self.assertIsNone(st["significant"],
+                              f"{name} claimed significance off a zero residual")
+            self.assertTrue(math.isnan(st["p_value"]), f"{name} reported a p-value")
+
+    def test_degenerate_fit_still_reports_effect_sizes(self) -> None:
+        # Withholding inference must not withhold the measurement itself.
+        d, y = self._perfect_five_factor()
+        e = doe.fit_effects(d, y, include_interactions=False)
+        self.assertTrue(any(abs(v) > 1e-6 for v in e["main"].values()))
+
+    def test_real_residual_still_gets_pvalues(self) -> None:
+        # The guard must not fire on a genuine, small-but-real error term.
+        d = doe.full_factorial_2level(3)
+        y = (10 + 4 * d[:, 0]
+             + 1.0 * d[:, 0] * d[:, 1]
+             + 1.0 * d[:, 0] * d[:, 2]
+             + 1.0 * d[:, 1] * d[:, 2])
+        e = doe.fit_effects(d, y, include_interactions=False)
+        self.assertFalse(e["degenerate_fit"])
+        self.assertFalse(math.isnan(e["main_stats"][0]["p_value"]))
+
+
+class AliasedWithTests(unittest.TestCase):
+    """Each ranked row must carry its own alias set.
+
+    A consumer filtering ranked_effects for `significant` decides what to ship
+    from that row. In a resolution III design several rows are the same
+    estimate, and the alias block lives in a different part of the output.
+    """
+
+    def test_ranked_rows_carry_alias_partners(self) -> None:
+        d = doe.fracfact(doe.FRACFACT_8_RUN[5])
+        names = ["ef_search", "iterative_scan", "work_mem", "parallel", "jit"]
+        y = 1.0 + 0.5 * d[:, 0] + np.array([0.01, -0.02, 0.03, -0.01,
+                                            0.02, -0.03, 0.01, -0.01])
+        e = doe.fit_effects(d, y, include_interactions=False)
+        chains = doe.alias_structure(d, factor_names=names)["alias_chains"]
+        rows = doe.rank_findings(e, names, alias_chains=chains)
+        by_term = {r["term"]: r for r in rows}
+        # This design is resolution III: every main effect is aliased.
+        for n in names:
+            self.assertIn("aliased_with", by_term[n])
+            self.assertTrue(by_term[n]["aliased_with"],
+                            f"{n} reported no alias partners in a resolution III design")
+
+    def test_alias_field_absent_when_chains_not_supplied(self) -> None:
+        d = doe.full_factorial_2level(2)
+        y = 10 + 5 * d[:, 0] + 2 * d[:, 1]
+        e = doe.fit_effects(d, y, include_interactions=False)
+        rows = doe.rank_findings(e, ["a", "b"])
+        self.assertIsNone(rows[0]["aliased_with"])

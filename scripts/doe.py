@@ -339,6 +339,11 @@ def _design_matrix(design: np.ndarray, include_interactions: bool
     return X, labels
 
 
+# A residual standard deviation below this fraction of the response's own
+# scale is treated as floating-point zero rather than as a measured error.
+DEGENERATE_RESIDUAL_REL_TOL = 1e-9
+
+
 def _inference_verdict(error_df: int) -> tuple[str, list[str]]:
     """Map error degrees of freedom → a plain-language trust verdict + warnings.
 
@@ -449,8 +454,34 @@ def fit_effects(design: np.ndarray, y: np.ndarray, include_interactions: bool = 
     else:
         r2 = None
 
+    # ---- Degenerate-fit detection ---------------------------------------
+    # A residual at machine epsilon is not an error estimate, it is numerical
+    # noise from a model that reproduces the response exactly. Testing against
+    # it yields standard errors around 1e-16 and p-values around 1e-31, which
+    # read as overwhelming evidence and are an artifact of dividing by zero.
+    # Compare the residual standard deviation against the response's own scale
+    # rather than against zero, so a genuinely tiny-but-real error still counts.
+    y_scale = max(float(np.std(y_fit)), abs(float(np.mean(y_fit))), 1e-300)
+    degenerate_fit = bool(
+        error_source == "residual"
+        and error_df > 0
+        and math.sqrt(max(error_var, 0.0)) < DEGENERATE_RESIDUAL_REL_TOL * y_scale
+    )
+
     # ---- Per-coefficient inference --------------------------------------
     verdict, warnings = _inference_verdict(error_df)
+    if degenerate_fit:
+        # Do NOT overwrite `inference`: a design can be both low-power and
+        # degenerate, and the df-based verdict is still true. Degeneracy is
+        # reported as its own flag plus a warning.
+        warnings.append(
+            "Degenerate fit: the model reproduces this response exactly, so the "
+            "residual is at floating-point zero and there is no error left to "
+            "test against. Effect sizes are still reported; p-values, t-statistics "
+            "and confidence intervals are withheld because any value computed from "
+            "this residual would be an artifact. Add replicate runs to obtain a "
+            "measured pure-error term."
+        )
     if error_df <= 0 and pure_error_df == 0 and cell_values is not None:
         warnings.append(
             "No replicated cells found: error estimate falls back to OLS "
@@ -471,7 +502,7 @@ def fit_effects(design: np.ndarray, y: np.ndarray, include_interactions: bool = 
     def _stat(idx: int) -> dict:
         coef = float(beta[idx])
         se = float(ses[idx])
-        if error_df > 0 and se > 0:
+        if error_df > 0 and se > 0 and not degenerate_fit:
             t = coef / se
             p = float(doe_stats.t_sf_two_sided(t, error_df))
             ci = [coef - t_crit * se, coef + t_crit * se]
@@ -497,6 +528,7 @@ def fit_effects(design: np.ndarray, y: np.ndarray, include_interactions: bool = 
         "main_stats": main_stats,
         "inter_stats": inter_stats,
         "r2": r2,
+        "degenerate_fit": degenerate_fit,
         "n_runs": n,
         "n_factors": k,
         "residual_df": residual_df,
@@ -509,13 +541,43 @@ def fit_effects(design: np.ndarray, y: np.ndarray, include_interactions: bool = 
     }
 
 
-def rank_findings(effects: dict, factor_names: list[str]) -> list[dict]:
+def _term_key(term: str) -> frozenset:
+    """Reduce any term label to the set of factors it involves.
+
+    Alias chains write interactions as "a\u00b7b"; ranked rows write them as
+    "a \u00d7 b". Both mean the same column, so compare on the factor set.
+    """
+    parts = term.replace("\u00d7", "\u00b7").split("\u00b7")
+    return frozenset(p.strip() for p in parts if p.strip())
+
+
+def rank_findings(effects: dict, factor_names: list[str],
+                  alias_chains: list[list[str]] | None = None) -> list[dict]:
     """Sort effects by absolute magnitude with human-readable labels.
 
-    Each row now carries the per-effect trust signals (se, t, p_value, ci95,
+    Each row carries the per-effect trust signals (se, t, p_value, ci95,
     significant) so a consumer ranking by magnitude can still see whether the
     top effect is statistically distinguishable from noise.
+
+    When `alias_chains` is supplied, every row also carries `aliased_with`: the
+    other effects sharing its column. In a low-resolution design several rows
+    are the SAME estimate under different names, and a consumer filtering for
+    `significant` would otherwise never learn that from the row itself.
     """
+    chain_by_key: dict[frozenset, list[str]] = {}
+    for chain in (alias_chains or []):
+        for term in chain:
+            chain_by_key[_term_key(term)] = list(chain)
+
+    def _aliases(term: str):
+        if not alias_chains:
+            return None
+        chain = chain_by_key.get(_term_key(term))
+        if not chain:
+            return []
+        key = _term_key(term)
+        return [t for t in chain if _term_key(t) != key]
+
     main_stats = effects.get("main_stats", {})
     inter_stats = effects.get("inter_stats", {})
     rows = []
@@ -527,6 +589,7 @@ def rank_findings(effects: dict, factor_names: list[str]) -> list[dict]:
             "abs_effect": abs(val),
         }
         row.update(main_stats.get(idx, {}))
+        row["aliased_with"] = _aliases(row["term"])
         rows.append(row)
     for (i, j), val in effects["interactions"].items():
         row = {
@@ -536,6 +599,7 @@ def rank_findings(effects: dict, factor_names: list[str]) -> list[dict]:
             "abs_effect": abs(val),
         }
         row.update(inter_stats.get((i, j), {}))
+        row["aliased_with"] = _aliases(row["term"])
         rows.append(row)
     rows.sort(key=lambda r: -r["abs_effect"])
     return rows
@@ -750,7 +814,8 @@ def cmd_analyze(args: argparse.Namespace) -> int:
         n_replicated = sum(1 for c in cell_values if len(c) > 1)
         effects = fit_effects(matrix, y, include_interactions=include_interactions,
                               cell_values=cell_values)
-        findings = rank_findings(effects, factor_names)
+        findings = rank_findings(effects, factor_names,
+                                 alias_chains=aliasing.get("alias_chains"))
         direction = args.direction or "lower"
         best_run_idx = int(np.argmin(y)) if direction == "lower" else int(np.argmax(y))
         best_factors: dict | None = None
@@ -831,10 +896,12 @@ def cmd_analyze(args: argparse.Namespace) -> int:
         eff = fit_effects(matrix, y_by_obj[obj_name],
                           include_interactions=include_interactions,
                           cell_values=cell_values)
-        findings = rank_findings(eff, factor_names)
+        findings = rank_findings(eff, factor_names,
+                                 alias_chains=aliasing.get("alias_chains"))
         per_objective[obj_name] = {
             "ranked_effects": findings,
             "r2": eff["r2"],
+            "degenerate_fit": eff.get("degenerate_fit", False),
             "intercept": eff["intercept"],
             "intercept_stats": eff["intercept_stats"],
             "direction": direction,
