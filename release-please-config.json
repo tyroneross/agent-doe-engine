@@ -2,6 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
   "release-type": "node",
   "include-v-in-tag": true,
+  "last-release-sha": "4cd45f34ebd37e33fcd894621b49be4f5cb61cab",
   "changelog-sections": [
     {
       "type": "feat",
@@ -59,7 +60,6 @@
     ".": {
       "package-name": "@tyroneross/agent-doe-engine",
       "changelog-path": "CHANGELOG.md",
-      "last-release-sha": "4cd45f34ebd37e33fcd894621b49be4f5cb61cab",
       "extra-files": [
         {
           "type": "json",
