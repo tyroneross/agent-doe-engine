@@ -17,7 +17,7 @@ The efficiency is the whole point. One-factor-at-a-time needs a run per variable
 
 Use validated measurements, passing execution guards, and independent review to judge a candidate.
 
-`${CLAUDE_PLUGIN_ROOT}` below is the plugin root; from a clone it's the repo root. Runtime state lives in the **consumer** project under `.agent-doe-engine/optimize/`.
+`DOE_ENGINE_ROOT` below must be the absolute plugin/repository root. Resolve it from this loaded file: two directories above `skills/agent-doe-engine/SKILL.md`. Claude hosts may copy their nonempty `CLAUDE_PLUGIN_ROOT`; other hosts use the resolved path. Never invoke a command with an empty root. Installed CLI users can use `agent-doe-engine <command>` instead; see [host setup](../../docs/hosts.md). Runtime state lives in the **consumer** project under `.agent-doe-engine/optimize/`.
 
 ## Three shapes of request
 
@@ -38,7 +38,7 @@ Skip when the user already named factors **and** they're known-adjustable in thi
 Every agent-doe-engine run mutates factor values across many DOE runs. Doing that in the user's primary checkout interleaves optimization writes with real work-in-progress and risks leaving the tree dirty if a run is killed. The helper handles create / reuse / cleanup:
 
 ```bash
-python3 ${CLAUDE_PLUGIN_ROOT}/scripts/worktree.py \
+python3 "${DOE_ENGINE_ROOT}/scripts/worktree.py" \
   --workdir "$TARGET_REPO" --target "<target name>" --json init
 ```
 
@@ -49,7 +49,7 @@ This is the default path, not an afterthought - there is no "just run in main" s
 ### 0.1 - Scan for factor candidates
 
 ```bash
-python3 ${CLAUDE_PLUGIN_ROOT}/scripts/suggest_factors.py \
+python3 "${DOE_ENGINE_ROOT}/scripts/suggest_factors.py" \
   --workdir "$PWD" --top 12 --json --research-levels > /tmp/mg-candidates.json
 ```
 
@@ -57,7 +57,7 @@ python3 ${CLAUDE_PLUGIN_ROOT}/scripts/suggest_factors.py \
 
 ### 0.2 - Host LLM ranks and picks the candidates to test
 
-The host coding agent's LLM reads the candidate list and selects which to take forward. The script is deterministic; the choice is reasoning work. Use the AskUserQuestion path to confirm - candidates **pre-checked**, per existing convention. Surface for each: `name`, `current_value`, `suggested_levels`, `confidence`, file:line, and one-line `why`. Limit the user-facing list to the ~6 highest-signal entries; let the user add/remove.
+The host coding agent's LLM reads the candidate list and selects which to take forward. The script is deterministic; the choice is reasoning work. Use the host's question tool or a plain conversation question to confirm candidates when the user has not already approved them. Surface for each: `name`, `current_value`, `suggested_levels`, `confidence`, file:line, and one-line `why`. Limit the user-facing list to the ~6 highest-signal entries; let the user add/remove.
 
 This is the canonical confirmation point - never auto-run downstream phases on heuristic candidates alone.
 
@@ -66,7 +66,7 @@ This is the canonical confirmation point - never auto-run downstream phases on h
 For each accepted candidate, prove the optimizer can actually move it before spending DOE runs:
 
 ```bash
-python3 ${CLAUDE_PLUGIN_ROOT}/scripts/validate_factors.py \
+python3 "${DOE_ENGINE_ROOT}/scripts/validate_factors.py" \
   --workdir "$PWD" --candidates /tmp/mg-candidates.json --json --reject-non-adjustable \
   > .agent-doe-engine/optimize/validated_factors.json
 ```
@@ -91,7 +91,7 @@ For any validated candidate that was flagged `needs_research: true` in §0.1, th
 - **Numeric factor**: replace the heuristic `suggested_levels` (two selected levels) with researched levels (e.g. for `BATCH_SIZE = 32` on a Transformer training loop, research may suggest `[16, 64]` based on published GPU memory tradeoffs).
 - **Categorical factor**: replace the levels with named variants (`{"name": "prompt_variant", "levels": ["few-shot", "zero-shot"]}`). The DOE machinery treats them as categorical levels - useful for prompt A/B, tokenizer choice, model variant, scheduler family, etc.
 
-This step is **off by default**. Enable only when the user explicitly asks ("research good levels for these") OR when the candidate set is small enough (≤3 factors) that the research overhead is worth it. The host invokes its own research tool - there are **no vendor API calls inside this plugin**. Always cite the source the research returned in the `factors.json` `why` field so a future run can audit it.
+This step is **off by default**. Enable only when the user explicitly asks ("research good levels for these") OR when the candidate set is small enough (≤3 factors) that the research overhead is worth it. The host invokes its own research tool - this research step makes no vendor API calls from the engine. The separate optional TypeSafe/Jev assessor requires explicit cloud permission and a user key. Always cite the source the research returned in the `factors.json` `why` field so a future run can audit it.
 
 If the host has no research capability, skip this step silently - the heuristic levels are a working default.
 
@@ -154,12 +154,12 @@ Otherwise the factor inventory comes from **Phase 0 (PLAN)** above: scan → hos
 ### 1.3 - Pick the design (≥2 factors)
 
 ```bash
-python3 ${CLAUDE_PLUGIN_ROOT}/scripts/doe.py detect <k>
+python3 "${DOE_ENGINE_ROOT}/scripts/doe.py" detect <k>
 ```
 Routing: `k=1` → autoresearch (§Single-factor); `2–3` → 2^k full factorial (≤8 runs); `4–7` → fractional factorial 2^(k-p) Res III/IV (8 runs); `8–11` → Plackett-Burman 12-run screening.
 
 ```bash
-python3 ${CLAUDE_PLUGIN_ROOT}/scripts/doe.py generate \
+python3 "${DOE_ENGINE_ROOT}/scripts/doe.py" generate \
   --factors "$(cat .agent-doe-engine/optimize/factors.json)" \
   --design auto --seed "$RANDOM" \
   > .agent-doe-engine/optimize/doe.json
@@ -172,15 +172,15 @@ For each row in `.agent-doe-engine/optimize/doe.json` (in randomized `run_order`
 1. Apply the factor values from `runs[i]._factors` to code / config / env.
 2. Measure **every objective** - run each objective's `metric_cmd` (use `metric_runner.py` for sampled/aggregated measurement of noisy metrics):
    ```bash
-   python3 ${CLAUDE_PLUGIN_ROOT}/scripts/metric_runner.py --cmd "<metric_cmd>" --samples 5 --warmups 1 --aggregate p95
+   python3 "${DOE_ENGINE_ROOT}/scripts/metric_runner.py" --cmd "<metric_cmd>" --samples 5 --warmups 1 --aggregate p95
    ```
-3. Run the guard (must exit 0): `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/metric_runner.py --guard "<guard_cmd>"`.
+3. Run the guard (must exit 0): `python3 "${DOE_ENGINE_ROOT}/scripts/metric_runner.py" --guard "<guard_cmd>"`.
 4. Append to `.agent-doe-engine/optimize/results.jsonl`: `{"run_id": i, "values": {"latency_ms": .., "cost_usd": ..}, "guard_ok": true}`.
 5. Revert the factor changes - each DOE run starts from the same baseline; the design does not accumulate.
 
 Then fit effects and select:
 ```bash
-python3 ${CLAUDE_PLUGIN_ROOT}/scripts/doe.py analyze \
+python3 "${DOE_ENGINE_ROOT}/scripts/doe.py" analyze \
   --design .agent-doe-engine/optimize/doe.json \
   --results .agent-doe-engine/optimize/results.jsonl \
   --objectives .agent-doe-engine/optimize/objectives.json \
@@ -214,7 +214,7 @@ Use the statistical analyst role (`agents/statistical-analyst.md`) before screen
 Reserve independent confirmation data/restarts before tuning. The CLI minimum is three confirmation observations; choose sample size from practical effect and uncertainty, not that minimum alone. Record guard and configuration/fixture/scorer/split identity on every row, then:
 
 ```bash
-python3 ${CLAUDE_PLUGIN_ROOT}/scripts/doe.py confirm \
+python3 "${DOE_ENGINE_ROOT}/scripts/doe.py" confirm \
   --design .agent-doe-engine/optimize/doe.json \
   --results .agent-doe-engine/optimize/results.jsonl \
   --objectives .agent-doe-engine/optimize/objectives.json \
@@ -235,7 +235,7 @@ Optional Jev must remain disabled by default; read `docs/statistical-analyst.md`
 When there is one factor (or one thing to try), skip DOE.
 
 ```bash
-python3 ${CLAUDE_PLUGIN_ROOT}/scripts/loop.py --init --workdir "$PWD" \
+python3 "${DOE_ENGINE_ROOT}/scripts/loop.py" --init --workdir "$PWD" \
   --target "<name>" --scope "<glob>" \
   --objectives "$(cat .agent-doe-engine/optimize/objectives.json | python3 -c 'import sys,json;print(json.dumps(json.load(sys.stdin)["objectives"]))')" \
   --selection scalarize \
@@ -244,7 +244,7 @@ python3 ${CLAUDE_PLUGIN_ROOT}/scripts/loop.py --init --workdir "$PWD" \
 
 Measure the baseline once, then record it:
 ```bash
-python3 ${CLAUDE_PLUGIN_ROOT}/scripts/loop.py --set-baseline --workdir "$PWD" \
+python3 "${DOE_ENGINE_ROOT}/scripts/loop.py" --set-baseline --workdir "$PWD" \
   --baseline-values '{"latency_ms": 100, "cost_usd": 5}'
 ```
 
@@ -256,10 +256,10 @@ Single-objective mode is the original behavior - omit `--objectives` and use `--
 
 1. Dispatch `overfitting-reviewer` (read-only): check for removed safety, fragile shortcuts, metric-gaming, scope violations across the kept changes.
 2. Summarize: runs, kept/reverted, per-objective improvement, the chosen trade-off.
-3. Archive: `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/loop.py --archive --workdir "$PWD"`.
+3. Archive: `python3 "${DOE_ENGINE_ROOT}/scripts/loop.py" --archive --workdir "$PWD"`.
 4. Worktree cleanup (Phase 0.0 counterpart). When the user has reviewed the kept changes and is ready to merge/cherry-pick or discard, remove the agent-doe-engine worktree:
    ```bash
-   python3 ${CLAUDE_PLUGIN_ROOT}/scripts/worktree.py \
+   python3 "${DOE_ENGINE_ROOT}/scripts/worktree.py" \
      --workdir "$TARGET_REPO" --target "<target name>" --json cleanup [--delete-branch]
    ```
    Default keeps the branch (so the user can inspect / merge later); add `--delete-branch` only when the user explicitly discards the run.

@@ -114,6 +114,13 @@ uv run pytest -q                                # test suite
 ```
 Requirements: Python >=3.10, numpy. Dev: pytest.
 
+**Any model host with process tools:** install with `python3 -m pip install .`,
+then call `agent-doe-engine doe detect 4` or another subcommand from any directory.
+The engine runs locally without an LLM provider key. See [host setup and tool
+contract](docs/hosts.md) for all commands, plugin path resolution, runtime limits
+and optional TypeSafe/Jev configuration. Compatibility describes the tool
+interface; each host supplies its own model and execution permissions.
+
 ## Quick start
 
 ```bash

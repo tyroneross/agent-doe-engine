@@ -19,6 +19,7 @@ Homepage = "https://github.com/tyroneross/agent-doe-engine"
 Repository = "https://github.com/tyroneross/agent-doe-engine"
 
 [project.scripts]
+agent-doe-engine = "engine_cli:main"
 agent-doe-engine-doe = "doe:main"
 agent-doe-engine-suggest-factors = "suggest_factors:main"
 agent-doe-engine-validate-factors = "validate_factors:main"
@@ -31,6 +32,7 @@ agent-doe-engine-assess = "semantic_assessor:main"
 
 [tool.setuptools]
 py-modules = [
+  "engine_cli",
   "doe",
   "doe_stats",
   "analyst",

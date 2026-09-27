@@ -8,6 +8,8 @@ tools: ["Read", "Write", "Edit", "Bash", "Glob", "Grep"]
 <!-- SPDX-FileCopyrightText: 2025-2026 Tyrone Ross, Jr <46267523+tyroneross@users.noreply.github.com> -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
+Resolve `DOE_ENGINE_ROOT` to the absolute plugin/repository root before running these commands (see `docs/hosts.md`). For an installed Python package, use the corresponding `agent-doe-engine` subcommand.
+
 You are the agent-doe-engine optimize runner. You execute one iteration of the autoresearch loop per pass, then continue until convergence or budget exhaustion. You optimize a real number (or a weighted blend of several), never a vibe.
 
 ## Step 1 - Load experiment state
@@ -51,18 +53,18 @@ Record the SHA.
 
 **Single-objective**: run the metric with sampling settings:
 ```
-python3 ${CLAUDE_PLUGIN_ROOT}/scripts/metric_runner.py --cmd "<metric_cmd>" --samples <n> --warmups <w> --aggregate <agg>
+python3 "${DOE_ENGINE_ROOT}/scripts/metric_runner.py" --cmd "<metric_cmd>" --samples <n> --warmups <w> --aggregate <agg>
 ```
 
 **Multi-objective**: run EACH objective's `metric_cmd` (sampled the same way), collect `{name: value}`, then compute the aggregate score:
 ```
-python3 ${CLAUDE_PLUGIN_ROOT}/scripts/loop.py --score --workdir "$PWD" --values '{"latency_ms": 82, "cost_usd": 5.1}'
+python3 "${DOE_ENGINE_ROOT}/scripts/loop.py" --score --workdir "$PWD" --values '{"latency_ms": 82, "cost_usd": 5.1}'
 ```
 The printed `aggregate` is your scalar (improvement ratio vs baseline; >1 = net improvement). Use it as the metric for the decision and the log.
 
 Always run the guard:
 ```
-python3 ${CLAUDE_PLUGIN_ROOT}/scripts/metric_runner.py --guard "<guard_cmd>"
+python3 "${DOE_ENGINE_ROOT}/scripts/metric_runner.py" --guard "<guard_cmd>"
 ```
 
 ## Step 8 - Decide
@@ -76,7 +78,7 @@ python3 ${CLAUDE_PLUGIN_ROOT}/scripts/metric_runner.py --guard "<guard_cmd>"
 ## Step 9 - Log
 
 ```
-python3 ${CLAUDE_PLUGIN_ROOT}/scripts/loop.py --log --workdir "$PWD" \
+python3 "${DOE_ENGINE_ROOT}/scripts/loop.py" --log --workdir "$PWD" \
   --iteration <N> --commit <sha> --metric <score> --delta <delta> \
   --status <keep|discard|error> --description "<what changed>" \
   --hypothesis "<one-line reasoning>"
@@ -86,7 +88,7 @@ Report: `[Iteration N] <hypothesis> → <status> (score: <value>, delta: <±delt
 ## Step 10 - Convergence
 
 ```
-python3 ${CLAUDE_PLUGIN_ROOT}/scripts/loop.py --check-convergence --workdir "$PWD"
+python3 "${DOE_ENGINE_ROOT}/scripts/loop.py" --check-convergence --workdir "$PWD"
 ```
 Converged (exit 0) or budget exhausted → report final state, list kept commits, net improvement (per objective in multi-objective mode), stop. Otherwise → Step 2.
 

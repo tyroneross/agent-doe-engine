@@ -6,24 +6,26 @@ argument-hint: "generate|analyze ..."
 <!-- SPDX-FileCopyrightText: 2025-2026 Tyrone Ross, Jr <46267523+tyroneross@users.noreply.github.com> -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
+Resolve `DOE_ENGINE_ROOT` to the absolute plugin/repository root before running these commands (see `docs/hosts.md`). For an installed Python package, use the corresponding `agent-doe-engine` subcommand.
+
 Direct entry to the DOE engine for: $ARGUMENTS
 
 The point of DOE is fewer runs: 2–3 factors → ≤8 runs, 4–7 → 8 runs, 8–11 → 12-run screening - far fewer than changing one variable at a time.
 
 **Which design for k factors:**
 ```bash
-python3 ${CLAUDE_PLUGIN_ROOT}/scripts/doe.py detect <k>
+python3 "${DOE_ENGINE_ROOT}/scripts/doe.py" detect <k>
 ```
 
 **Generate a matrix:**
 ```bash
-python3 ${CLAUDE_PLUGIN_ROOT}/scripts/doe.py generate \
+python3 "${DOE_ENGINE_ROOT}/scripts/doe.py" generate \
   --factors "<json-or-path>" --design auto --seed 1
 ```
 
 **Analyze measured results** (single-metric):
 ```bash
-python3 ${CLAUDE_PLUGIN_ROOT}/scripts/doe.py analyze \
+python3 "${DOE_ENGINE_ROOT}/scripts/doe.py" analyze \
   --design .agent-doe-engine/optimize/doe.json \
   --results .agent-doe-engine/optimize/results.jsonl \
   --direction lower
@@ -31,7 +33,7 @@ python3 ${CLAUDE_PLUGIN_ROOT}/scripts/doe.py analyze \
 
 **Analyze for multiple objectives** (add `--objectives`):
 ```bash
-python3 ${CLAUDE_PLUGIN_ROOT}/scripts/doe.py analyze \
+python3 "${DOE_ENGINE_ROOT}/scripts/doe.py" analyze \
   --design .agent-doe-engine/optimize/doe.json \
   --results .agent-doe-engine/optimize/results.jsonl \
   --objectives .agent-doe-engine/optimize/objectives.json

@@ -110,7 +110,7 @@ def _validate(record, previous):
         if not isinstance(record.get("settings"), dict):
             raise ValueError("Attempt settings must be an object")
         for earlier in attempts.values():
-            if (earlier["batch_id"], earlier["cell_id"]) == (record["batch_id"], record["cell_id"]) and earlier["settings"] != record["settings"]:
+            if (earlier["batch_id"], earlier["cell_id"]) == (record["batch_id"], record["cell_id"]) and content_hash(earlier["settings"]) != content_hash(record["settings"]):
                 raise ValueError("Settings changed for an existing batch/cell; assign a new cell_id")
         metrics = record.get("metrics")
         if not isinstance(metrics, dict):

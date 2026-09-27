@@ -1,6 +1,7 @@
 analyst
 doe
 doe_stats
+engine_cli
 experiment_ledger
 loop
 metric_runner

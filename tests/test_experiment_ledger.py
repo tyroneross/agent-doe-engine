@@ -64,6 +64,16 @@ def test_duplicate_attempt_and_changed_cell_are_rejected(path):
     ledger.append_attempt(path, attempt(attempt_id="a2", cell_id="c2", settings={"model": "other"}))
 
 
+@pytest.mark.parametrize("first,second", [(1, True), (0, False), ([1], [True]), ({"x": 1}, {"x": True})])
+def test_same_cell_rejects_boolean_numeric_setting_changes(path, first, second):
+    ledger.append_attempt(path, attempt(settings={"factor": first}))
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match="Settings changed"):
+        ledger.append_attempt(path, attempt(attempt_id="a2", settings={"factor": second}))
+    assert path.read_bytes() == before
+    assert len(ledger.load_ledger(path)) == 2
+
+
 def test_decision_references_and_proposed_amendment(path):
     ledger.append_attempt(path, attempt())
     decision = {"decision_id": "d1", "attempt_ids": ["a1"], "reason": "Need confirmation", "next_change": "New fixture"}

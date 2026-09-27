@@ -12,8 +12,8 @@ support channel — the manifest carries no contact address by design.
 
 1. Ask what went wrong, if the user has not already said. One question, not a form.
 2. Gather the context that makes a report actionable, without interrogating the user:
-   - plugin version from `.claude-plugin/plugin.json`
-   - `claude --version`
+   - plugin version from the active host manifest or installed Python package
+   - host name and version (for example, `claude --version` only when running Claude Code)
    - `uname -sm`
    - which command or skill misbehaved, and what it did instead
 3. Show the user the exact title and body you intend to file. Their report, their words.

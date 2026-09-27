@@ -6,8 +6,11 @@
   "files": [
     "agents/",
     "commands/",
-    "docs/",
+    "docs/*.md",
+    "docs/validation/",
+    "examples/",
     "scripts/*.py",
+    "scripts/report_theme.css",
     "skills/",
     ".claude-plugin/",
     ".codex-plugin/",

@@ -1,4 +1,5 @@
 [console_scripts]
+agent-doe-engine = engine_cli:main
 agent-doe-engine-analyst = analyst:main
 agent-doe-engine-assess = semantic_assessor:main
 agent-doe-engine-doe = doe:main
