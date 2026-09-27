@@ -60,6 +60,18 @@ def _timestamp(value, field):
         raise ValueError(f"{field} must be an ISO 8601 timestamp with timezone") from exc
 
 
+def validate_semantic_assessment(receipt):
+    """Check optional receipt structure without turning a missing result into success."""
+    if receipt is None:
+        return
+    if not isinstance(receipt, dict) or type(receipt.get("required")) is not bool:
+        raise ValueError("semantic_assessment requires a boolean required field")
+    if not isinstance(receipt.get("status"), str) or not receipt["status"].strip():
+        raise ValueError("semantic_assessment requires a nonempty status string")
+    if "measurement_available" in receipt and type(receipt["measurement_available"]) is not bool:
+        raise ValueError("semantic_assessment measurement_available must be a boolean")
+
+
 def _validate(record, previous):
     if not isinstance(record, dict):
         raise ValueError("Each record must be a JSON object")
@@ -108,6 +120,7 @@ def _validate(record, previous):
                 raise ValueError("Metric values must be numbers or null")
         if record.get("guard_ok") is not None and type(record["guard_ok"]) is not bool:
             raise ValueError("guard_ok must be true, false or null")
+        validate_semantic_assessment(record.get("semantic_assessment"))
         if record.get("error") is not None and not isinstance(record["error"], str):
             raise ValueError("error must be a string or null")
         if record.get("change") is not None and not isinstance(record["change"], str):
@@ -188,13 +201,14 @@ def _append(path, payload, kind):
         fcntl.flock(handle, fcntl.LOCK_EX)
         handle.seek(0)
         existing_text = handle.read()
+        if existing_text and not existing_text.endswith("\n"):
+            line_number = existing_text.count("\n") + 1
+            raise ValueError(f"Ledger line {line_number} is incomplete; preserve the ledger and recover the final record before appending")
         previous = _read_lines(existing_text.splitlines())
         if kind == "campaign" and previous:
             raise ValueError("Campaign is already initialized; existing records were preserved")
         if kind != "campaign" and not previous:
             raise ValueError("Initialize a campaign before appending records")
-        if existing_text and not existing_text.endswith("\n"):
-            raise ValueError("Ledger ends with an incomplete line; preserve it and recover before appending")
         record.update(schema_version=SCHEMA_VERSION, record_type=kind,
                       recorded_at=datetime.now(timezone.utc).isoformat(),
                       prev_hash=previous[-1]["record_hash"] if previous else None)

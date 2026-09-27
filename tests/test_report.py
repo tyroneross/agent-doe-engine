@@ -191,3 +191,19 @@ def test_generated_javascript_parses(model, tmp_path):
     path.write_text(script)
     result = subprocess.run([node, "--check", str(path)], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("receipt", ["error", [], {}, {"required": "true", "status": "error"},
+    {"required": 1, "status": "ok"}, {"required": False, "status": []},
+    {"required": True, "status": ""}, {"required": True, "status": "ok", "measurement_available": 1}])
+def test_malformed_legacy_semantic_receipt_is_never_complete(tmp_path, receipt):
+    path = tmp_path / "malformed-semantic.jsonl"
+    raw = {"run_id": 0, "values": {"score": 1}, "guard_ok": True, "semantic_assessment": receipt}
+    path.write_text(json.dumps(raw) + "\n")
+    model = report.load_report(legacy=path)
+    assert report.status(model["attempts"][0]) == "incomplete"
+    assert model["attempts"][0]["source_record"] == raw
+    assert "Malformed semantic assessment" in report.render_html(model)
+    rows = list(csv.DictReader(io.StringIO(report.render_csv(model))))
+    assert rows[0]["status"] == "incomplete"
+    assert "Malformed semantic assessment" in rows[0]["error"]

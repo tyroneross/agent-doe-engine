@@ -17,7 +17,7 @@ import json
 import math
 from pathlib import Path
 
-from experiment_ledger import load_ledger
+from experiment_ledger import load_ledger, validate_semantic_assessment
 
 UNKNOWN = "Not recorded"
 HEADERS = ["attempt_id", "batch_id", "cell_id", "phase", "status", "settings", "change",
@@ -139,6 +139,10 @@ def _metrics(attempt):
 
 def _semantic_issue(attempt):
     receipt = attempt.get("semantic_assessment")
+    try:
+        validate_semantic_assessment(receipt)
+    except ValueError as exc:
+        return f"Malformed semantic assessment: {exc}"
     if isinstance(receipt, dict) and receipt.get("required") is True:
         if receipt.get("status") != "ok" or receipt.get("measurement_available") is not True:
             return "Required semantic measurement unavailable: " + _display(receipt.get("status"))

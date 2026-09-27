@@ -845,7 +845,11 @@ def confirm_objective(obj: dict, effects: dict, design: np.ndarray, best_idx: in
     target = obj.get("target"); baseline = obj.get("baseline")
     min_acceptable = obj.get("min_acceptable"); min_effect = obj.get("min_effect")
     bar_desc, passed, why = None, None, ""
+    individual_breach_count = None
     if role == "primary":
+        if min_effect is not None and float(min_effect) == 0:
+            warnings.append(f"{name}: min_effect=0 declares no positive improvement requirement; "
+                            "the acceptance check applies to the confirmation mean.")
         if target is not None:
             bar_desc = f"target {float(target):g}"
             passed = meets(mean, float(target))
@@ -871,7 +875,12 @@ def confirm_objective(obj: dict, effects: dict, design: np.ndarray, best_idx: in
         else:
             bar_desc = f"{'min_acceptable' if min_acceptable is not None else 'baseline'} {float(bar):g}"
             passed = meets(mean, float(bar))
+            individual_breach_count = sum(not meets(float(v), float(bar)) for v in vals)
             why = f"mean {mean:.6g} {'holds' if passed else 'breaks'} {bar_desc}"
+            if individual_breach_count:
+                warnings.append(f"{name}: {individual_breach_count} of {n} confirmation "
+                                "observations breach the guardrail. The declared acceptance "
+                                "check applies to the confirmation mean, not every observation.")
     else:
         bar_desc, passed, why = "reported only", None, "quality metric; never decides"
 
@@ -885,7 +894,9 @@ def confirm_objective(obj: dict, effects: dict, design: np.ndarray, best_idx: in
         "pi_mean": pi_mean, "pi_each": pi_each,
         "mean_in_pi": mean_in_pi, "all_in_pi": all_in_pi,
         "bar": bar_desc, "pass": passed, "why": why,
-        "threshold_check": "point_estimate", "inference_claim": "model_agreement_only",
+        "threshold_check": "point_estimate", "threshold_scope": "confirmation_mean",
+        "individual_breach_count": individual_breach_count,
+        "inference_claim": "model_agreement_only",
         "warnings": warnings,
     }
 
@@ -1391,6 +1402,8 @@ def _read_confirmation(path: str, obj_names: list[str]) -> dict[str, list[float]
             vals = {single: row["value"]}
         else:
             raise ValueError("confirmation row needs 'values' (or 'value' with one objective)")
+        if not isinstance(vals, dict):
+            raise ValueError("confirmation values must be an object keyed by objective")
         for n in obj_names:
             if n not in vals:
                 raise ValueError(f"confirmation row missing objective '{n}'")
@@ -1493,9 +1506,15 @@ def promotion_checks(contract: dict | None, design: dict, screening: list[dict],
         blockers.append("semantic_assessor.required must be a boolean")
         semantic_config = {"required": True}
     items = {"screening": set(), "confirmation": set()}
+    attempt_ids = {"screening": set(), "confirmation": set()}
     for phase, rows in (("screening", screening), ("confirmation", confirmation)):
         for i, row in enumerate(rows):
             label = f"{phase} row {i}"
+            if "attempt_id" in row:
+                if not nonempty(row["attempt_id"]):
+                    blockers.append(f"{label}: attempt_id must be a nonempty string")
+                else:
+                    attempt_ids[phase].add(row["attempt_id"])
             if phase == "confirmation" and not nonempty(row.get("attempt_id")):
                 blockers.append(f"{label}: attempt_id is required for promotion")
             if phase == "screening" and objectives.guard_status(row) is not True:
@@ -1524,6 +1543,8 @@ def promotion_checks(contract: dict | None, design: dict, screening: list[dict],
                     items[phase].update(ids)
     if items["screening"] & items["confirmation"]:
         blockers.append("screening and confirmation item_ids overlap")
+    if attempt_ids["screening"] & attempt_ids["confirmation"]:
+        blockers.append("screening and confirmation attempt_ids overlap")
     return {"ready": not blockers, "blockers": blockers,
             "provenance": "unverified_attestations"}
 
@@ -1538,6 +1559,13 @@ def cmd_confirm(args: argparse.Namespace) -> int:
     alpha = float(args.alpha)
     if not math.isfinite(alpha) or not 0 < alpha < 1:
         sys.stderr.write("alpha must be finite and strictly between 0 and 1\n")
+        return 2
+
+    try:
+        contract_arg = getattr(args, "contract", None)
+        contract = _read_json_arg(contract_arg) if contract_arg else None
+    except (ValueError, TypeError, OSError) as exc:
+        sys.stderr.write(f"--contract parse error: {exc}\n")
         return 2
 
     try:
@@ -1561,8 +1589,8 @@ def cmd_confirm(args: argparse.Namespace) -> int:
     obj_names = [o["name"] for o in obj_list]
 
     # Re-collect the design's results and refit per objective.
-    raw_lines = Path(args.results).read_text().splitlines()
     try:
+        raw_lines = Path(args.results).read_text().splitlines()
         if single_metric:
             y, cell_values, _ = _collect_single_metric(raw_lines, n)
             y_by_obj = {"value": y}
@@ -1580,7 +1608,7 @@ def cmd_confirm(args: argparse.Namespace) -> int:
             y_by_obj, cellvals_by_obj, mean_rows, _ = _collect_multi_metric(
                 raw_results, obj_names, n)
         conf = _read_confirmation(args.confirmation, obj_names)
-    except (ValueError, KeyError) as exc:
+    except (ValueError, KeyError, TypeError, OSError) as exc:
         sys.stderr.write(f"results parse error: {exc}\n")
         return 2
 
@@ -1629,8 +1657,6 @@ def cmd_confirm(args: argparse.Namespace) -> int:
     primary_ok = bool(primaries) and all(c["pass"] is True for c in primaries)
     guardrails_ok = all(c["pass"] is not False for c in guardrails)
     numerical_confirmed = bool(primary_ok and guardrails_ok and n_conf >= 3 and not unresolved_guardrails)
-    contract_arg = getattr(args, "contract", None)
-    contract = _read_json_arg(contract_arg) if contract_arg else None
     screening = [json.loads(line) for line in raw_lines if line.strip()]
     confirmation = [json.loads(line) for line in Path(args.confirmation).read_text().splitlines()
                     if line.strip()]
@@ -1676,6 +1702,7 @@ def cmd_confirm(args: argparse.Namespace) -> int:
         "promotion_ready": done,
         "promotion_checks": promotion,
         "inference_claim": "point_thresholds_and_model_agreement_only",
+        "threshold_scope": "confirmation_mean",
         "independence": "caller_attested; unique attempt IDs do not prove independent units",
         "recommendation": recommendation,
         "best_run": int(best_idx),

@@ -57,3 +57,14 @@ def test_required_semantic_failure_blocks_inference():
 def test_missing_guard_is_unknown_not_passed():
     rows=pairs([1,2,3,4,5]);del rows[0]['guard_ok']
     with pytest.raises(ValueError):analyze_pairs(rows)
+
+
+@pytest.mark.parametrize('baseline,candidate', [(-1e308,1e308),(0,10**400)])
+def test_overflow_returns_clean_cli_error(tmp_path,capsys,baseline,candidate):
+    import json
+    from paired_analysis import main
+    rows=[{'arm':arm,'unit_id':'one','guard_ok':True,'value':value} for arm,value in [('baseline',baseline),('candidate',candidate)]]
+    source=tmp_path/'overflow.jsonl';source.write_text(''.join(json.dumps(r)+'\n' for r in rows))
+    assert main(['--observations',str(source)])==2
+    result=json.loads(capsys.readouterr().err)
+    assert result['status']=='invalid'

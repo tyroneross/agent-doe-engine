@@ -10,7 +10,7 @@ from pathlib import Path
 import statistics
 import sys
 from doe_stats import t_ppf
-from objectives import guard_status
+from objectives import guard_status, finite_measurement
 
 
 def analyze_pairs(rows, *, baseline='baseline', candidate='candidate', response='continuous', direction='higher', margin=0.0, alpha=0.05):
@@ -30,9 +30,7 @@ def analyze_pairs(rows, *, baseline='baseline', candidate='candidate', response=
             raise ValueError('Each observation requires a nonempty unit_id')
         if guard_status(dict(r, guard_ok=r.get('guard_ok'))) is not True:
             raise ValueError('Failed or unknown guards cannot enter paired inference')
-        v = r.get('value')
-        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
-            raise ValueError('Each value must be a finite number')
+        v = finite_measurement(r.get('value'))
         if response == 'binary' and v not in (0, 1):
             raise ValueError('Binary observations must be zero or one')
         rep = r.get('replicate_id')
@@ -53,6 +51,8 @@ def analyze_pairs(rows, *, baseline='baseline', candidate='candidate', response=
     c = [statistics.mean(arms[candidate][u]) for u in units]
     sign = 1 if direction == 'higher' else -1
     differences = [sign * (cv - bv) for bv, cv in zip(b, c)]
+    if any(not math.isfinite(value) for value in differences):
+        raise ValueError("Paired differences exceed finite numeric range")
     mean = statistics.mean(differences)
     out = dict(method='paired unit means', independent_unit='unit_id (caller-declared)',
                n_units=len(units), n_observations=len(rows), baseline=baseline, candidate=candidate,
@@ -79,6 +79,8 @@ def analyze_pairs(rows, *, baseline='baseline', candidate='candidate', response=
         else:
             radius = t_ppf(1-alpha/2, len(units)-1) * sd / math.sqrt(len(units))
             interval = [mean-radius, mean+radius]
+            if not all(math.isfinite(value) for value in interval):
+                raise ValueError("Paired interval exceeds finite numeric range")
             out.update(method='paired Student t interval on unit means', interval=interval,
                        supports_practical_improvement=interval[0] > margin,
                        status='supports_practical_improvement' if interval[0] > margin else 'inconclusive')
@@ -97,9 +99,10 @@ def main(argv=None):
     try:
         rows=[json.loads(s) for s in Path(a.observations).read_text().splitlines() if s.strip()]
         result=analyze_pairs(rows,baseline=a.baseline,candidate=a.candidate,response=a.response,direction=a.direction,margin=a.margin,alpha=a.alpha)
-    except (ValueError, OSError, TypeError) as exc:
+        encoded=json.dumps(result,indent=2,allow_nan=False)
+    except (ValueError, OSError, TypeError, OverflowError) as exc:
         print(json.dumps({'status':'invalid','error':str(exc)}),file=sys.stderr);return 2
-    print(json.dumps(result,indent=2,allow_nan=False));return 0
+    print(encoded);return 0
 
 if __name__ == '__main__':
     raise SystemExit(main())

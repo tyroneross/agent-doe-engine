@@ -128,3 +128,30 @@ def test_parallel_appends_keep_one_valid_chain(path):
     records = ledger.load_ledger(path)
     assert len(records) == 13
     assert len({r["attempt_id"] for r in records[1:]}) == 12
+
+
+@pytest.mark.parametrize("receipt", ["error", [], {}, {"required": "true", "status": "error"},
+    {"required": 1, "status": "ok"}, {"required": False, "status": []},
+    {"required": True, "status": ""}, {"required": True, "status": "ok", "measurement_available": 1}])
+def test_malformed_semantic_receipt_cannot_be_appended(path, receipt):
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match="semantic_assessment"):
+        ledger.append_attempt(path, attempt(semantic_assessment=receipt))
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("tail", ['{"unfinished":', '{"complete_json":true}'])
+def test_incomplete_final_line_explains_recovery_without_changing_bytes(path, tail):
+    path.write_text(path.read_text() + tail)
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match="line 2 is incomplete; preserve the ledger and recover"):
+        ledger.append_attempt(path, attempt())
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("receipt", [None, {"required": False, "status": "disabled", "measurement_available": False},
+    {"required": True, "status": "error", "measurement_available": False},
+    {"required": True, "status": "ok", "measurement_available": True}])
+def test_valid_semantic_receipts_remain_recordable(path, receipt):
+    record = ledger.append_attempt(path, attempt(semantic_assessment=receipt))
+    assert ledger.load_ledger(path)[-1]["semantic_assessment"] == record["semantic_assessment"]

@@ -26,3 +26,16 @@ Final disposition: no open findings in the reviewed source and local reproductio
 ## Evidence limits
 
 Cross-review establishes only the inspected source behavior and reproduced local cases. Neither reviewer ran a paid provider. Browser checks used the generated synthetic report; no claim of real campaign benefit follows. Review evidence is retained with tests so failures remain reproducible.
+
+
+## Claude follow-up review
+
+[Claude Opus 5.5 source review](claude-review.md) independently inspected the current committed code. It reported conditional approval with no contract-free promotion, export injection or unsafe cloud call. It could not execute tests or inspect the baseline diff.
+
+- Zero minimum improvement is an explicit acceptance criterion. It permits equality; the engine now warns that no positive improvement was required. We retained the declared criterion rather than changing its meaning to strict superiority.
+- Numeric guardrails apply to means of replicated responses. Requiring every noisy replicate to clear a mean threshold would change the estimand. The engine now states the threshold scope, reports individual breaches, and warns. Hard per-execution constraints belong in `guard_ok`.
+- Concrete hardening: reject overlapping supplied screening/confirmation attempt IDs; handle invalid contract JSON/path and non-object confirmation values cleanly; reject malformed semantic receipts instead of showing complete; identify truncated ledger lines before parsing; return structured paired-analysis errors on overflow.
+
+Follow-up validation: **465 passed, 1 skipped, 48 subtests passed**. Independent exact-case checks of overlapping attempts, malformed CLI inputs, mean-threshold warnings, malformed semantic receipts, truncated records and paired overflow all passed. The corrected wheel passed installed entry-point and CSS smoke checks.
+
+Claude independently [approved the corrected source](claude-followup.md) and agreed with both explicit mean-threshold dispositions. Its optional notes are retained with their stated limits. No mandatory findings remain.

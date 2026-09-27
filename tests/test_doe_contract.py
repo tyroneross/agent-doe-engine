@@ -382,3 +382,62 @@ def test_confirmation_reports_near_tie_selection(campaign, capsys):
     assert rc == 0, err
     assert out["contenders"] == [2, 3]
     assert any("tie" in w for w in out["warnings"])
+
+
+
+def test_cross_split_attempt_identity_reuse_blocks_promotion(campaign, capsys):
+    campaign["rows"][0]["attempt_id"] = campaign["conf"][0]["attempt_id"]
+    rc, out, err = run(campaign, capsys)
+    assert rc == 0, err
+    assert out["numerical_confirmed"] and not out["promotion_ready"]
+    assert "screening and confirmation attempt_ids overlap" in out["promotion_checks"]["blockers"]
+
+
+@pytest.mark.parametrize("value", [["latency"], "latency", 78, None])
+def test_confirmation_values_require_object(campaign, capsys, value):
+    campaign["conf"][0]["values"] = value
+    rc, out, err = run(campaign, capsys)
+    assert rc == 2 and out is None and "values must be an object" in err
+
+
+@pytest.mark.parametrize("bad_contract", ["{bad-json", "missing-contract.json"])
+def test_contract_input_error_is_clean_for_direct_command(campaign, capsys, bad_contract):
+    import argparse
+    run(campaign, capsys)  # write the valid fixture files
+    root = campaign["root"]
+    args = argparse.Namespace(design=str(root/"design.json"),results=str(root/"rows.jsonl"),
+        confirmation=str(root/"conf.jsonl"),objectives=str(root/"objs.json"),
+        alpha=.05,contract=bad_contract,selection=None)
+    assert doe.cmd_confirm(args) == 2
+    captured = capsys.readouterr()
+    assert not captured.out and "--contract parse error" in captured.err
+    assert "Traceback" not in captured.err
+
+
+@pytest.mark.parametrize("direction,bar,values", [
+    ("higher", .9, [.5,1,1,1,1]), ("lower",10,[14,9,9,9,9])])
+def test_guardrail_reports_individual_breaches_without_redefining_mean_rule(campaign, capsys,direction,bar,values):
+    obj={"name":"guard","role":"guardrail","direction":direction,"min_acceptable":bar}
+    campaign["objs"].append(obj)
+    campaign["contract"]["objectives"] = copy.deepcopy(campaign["objs"])
+    for row in campaign["rows"]:
+        row["values"]["guard"] = (.94+.01*row["run_id"] if direction=="higher" else 8-.1*row["run_id"])
+    for row,value in zip(campaign["conf"],values):
+        row["values"]["guard"]=value
+    rc,out,err=run(campaign,capsys)
+    assert rc==0,err
+    assert out["done"] and out["threshold_scope"]=="confirmation_mean"
+    criterion=next(c for c in out["criteria"] if c["name"]=="guard")
+    assert criterion["pass"] and criterion["individual_breach_count"]==1
+    assert criterion["threshold_scope"]=="confirmation_mean"
+    assert any("1 of 5 confirmation observations breach" in w for w in out["warnings"])
+
+
+def test_zero_min_effect_remains_allowed_and_warns_no_positive_improvement(campaign,capsys):
+    campaign["objs"][0].pop("target")
+    campaign["objs"][0].update(baseline=78,min_effect=0)
+    campaign["contract"]["objectives"]=copy.deepcopy(campaign["objs"])
+    rc,out,err=run(campaign,capsys)
+    assert rc==0,err
+    assert out["done"]
+    assert any("min_effect=0 declares no positive improvement requirement" in w for w in out["warnings"])
