@@ -11,6 +11,7 @@ import hashlib
 from importlib.metadata import version, PackageNotFoundError
 import json
 import math
+import os
 import shutil
 from pathlib import Path
 import random
@@ -47,6 +48,18 @@ def digest(path):
 
 def save(path, value):
     Path(path).write_text(json.dumps(value, indent=2, allow_nan=False)+'\n')
+
+
+def create_durable_json(path, value):
+    """Reserve evidence without overwrite; sync it before any provider call."""
+    encoded=json.dumps(value,indent=2,allow_nan=False)+'\n'
+    with path.open('x') as f:
+        f.write(encoded)
+        f.flush()
+        os.fsync(f.fileno())
+    directory=os.open(path.parent,os.O_RDONLY)
+    try:os.fsync(directory)
+    finally:os.close(directory)
 
 
 def public_case(case):
@@ -109,6 +122,15 @@ def execute_case(case, run, phase, out, role, task_contract):
     if settings['goal_reasoning']:system+='\n'+GOAL
     if settings['next_test_protocol']:system+='\n'+NEXT
     prompt=json.dumps({"task_contract":task_contract,"scenario":public_case(case)},sort_keys=True)
+    pending_path=out/'receipts'/f'{aid}.pending.json'
+    pending={'attempt_id':aid,'phase':phase,'status':'pending','outcome':'unknown',
+             'cost_status':'unknown, possibly incurred',
+             'created_at':datetime.now(timezone.utc).isoformat(),
+             'receipt':receipt_path.name,'frozen_sha256':digest(out/'frozen.json'),
+             'note':'Reservation precedes invocation; only a completed canonical attempt and verified receipt establish its result. Never retry automatically.'}
+    try:create_durable_json(pending_path,pending)
+    except FileExistsError:
+        raise ValueError('Attempt pending marker already exists; outcome may be unknown, no provider retry') from None
     raw,answer,elapsed,error=invoke(prompt,system)
     measured={'decision_score':None,'all_correct':None,'safe_choice':None}
     if error is None:
@@ -120,8 +142,7 @@ def execute_case(case, run, phase, out, role, task_contract):
              'provider':raw,'answer':answer,'score':measured,'error':error,
              'frozen_sha256':digest(out/'frozen.json'),
              'frozen_claude_cli_version':json.loads((out/'frozen.json').read_text())['runtime']['claude_cli_version']}
-    with receipt_path.open('x') as f:
-        f.write(json.dumps(receipt,indent=2,allow_nan=False)+'\n')
+    create_durable_json(receipt_path,receipt)
     metrics={k:measured[k] for k in ('decision_score','all_correct','safe_choice')}
     metrics.update(latency_s=elapsed,cost_usd=raw.get('total_cost_usd'), valid_response=int(error is None))
     record={'attempt_id':aid,'batch_id':phase,'cell_id':str(rid),'phase':phase,
@@ -137,7 +158,7 @@ def execute_case(case, run, phase, out, role, task_contract):
     return response
 
 
-def verify_result_rows(rows, ledger, phase):
+def verify_result_rows(rows, ledger, phase, out):
     attempts={r['attempt_id']:r for r in ledger if r.get('record_type')=='attempt' and r['phase']==phase}
     if len(rows)!=len(attempts):raise ValueError('Result count differs from canonical ledger')
     seen=set()
@@ -146,6 +167,14 @@ def verify_result_rows(rows, ledger, phase):
         attempt=attempts.get(identity)
         if identity in seen or attempt is None:raise ValueError('Duplicate or unknown attempt in results')
         seen.add(identity)
+        receipt_path=out/'receipts'/f'{identity}.json'
+        if attempt.get('evidence')!=str(Path('receipts')/f'{identity}.json'):
+            raise ValueError('Receipt path differs from canonical attempt identity')
+        try:receipt_hash=digest(receipt_path)
+        except OSError as exc:
+            raise ValueError(f'Canonical attempt receipt is unavailable: {identity}') from exc
+        if receipt_hash!=attempt.get('receipt_sha256'):
+            raise ValueError(f'Receipt hash differs from canonical ledger: {identity}')
         if (row['run_id']!=int(attempt['cell_id']) or row['unit_id']!=attempt['scenario_id']
                 or row['values']!=attempt['metrics'] or row['guard_ok'] is not attempt['guard_ok']):
             raise ValueError('Result content differs from canonical ledger')
@@ -375,7 +404,8 @@ def main(argv=None):
         raise ValueError('Confirmation already finalized; preserve its decision and use a new campaign')
     if a.stage in ('screen','confirm'):
         if ((out/f'{a.stage}-results.jsonl').exists()
-                or any(r.get('record_type')=='attempt' and r.get('phase')==a.stage for r in ledger)):
+                or any(r.get('record_type')=='attempt' and r.get('phase')==a.stage for r in ledger)
+                or any((out/'receipts').glob(f'{a.stage}-*'))):
             raise ValueError('Batch already started; preserve attempts, no automatic retry/resume')
         rng=random.Random(SEED if a.stage=='screen' else SEED+1)
         candidate=None
@@ -383,6 +413,8 @@ def main(argv=None):
             decisions=[r for r in load_ledger(out/'campaign.jsonl') if r.get('decision_id')=='screen-to-confirm']
             if len(decisions)!=1 or decisions[0]['selection_sha256']!=digest(out/'selection.json') or decisions[0]['screening_sha256']!=digest(out/'screen-results.jsonl'):
                 raise ValueError('Screening or selection changed after decision')
+            screening_rows=[json.loads(s) for s in (out/'screen-results.jsonl').read_text().splitlines()]
+            verify_result_rows(screening_rows,ledger,'screen',out)
             candidate=json.loads((out/'selection.json').read_text())['confirmation_challenger']
             if candidate is None:raise ValueError('No eligible challenger; confirmation stopped')
         selected=[c for c in cases if c['split']==('screening' if a.stage=='screen' else 'confirmation')]
@@ -394,7 +426,7 @@ def main(argv=None):
         verify_sources(out,frozen)
         if a.stage=='screen':
             rows=[json.loads(s) for s in (out/'screen-results.jsonl').read_text().splitlines()]
-            verify_result_rows(rows,load_ledger(out/'campaign.jsonl'),'screen')
+            verify_result_rows(rows,load_ledger(out/'campaign.jsonl'),'screen',out)
             descriptive_effects(out,rows,runs)
             selection=select_screening(rows,runs,len(selected),frozen['min_effect'])
             means=selection['means'];improved=selection['clears_screening_margin'];challenger=selection['confirmation_challenger']
@@ -405,6 +437,8 @@ def main(argv=None):
     decisions=[r for r in ledger if r.get('decision_id')=='screen-to-confirm']
     if len(decisions)!=1 or decisions[0]['selection_sha256']!=digest(out/'selection.json') or decisions[0]['screening_sha256']!=digest(out/'screen-results.jsonl'):
         raise ValueError('Screening or selection changed after decision')
+    screening_rows=[json.loads(s) for s in (out/'screen-results.jsonl').read_text().splitlines()]
+    verify_result_rows(screening_rows,ledger,'screen',out)
     if selection['confirmation_challenger'] is None:
         save(out/'summary.json',{'status':'no_eligible_challenger','failure_status':selection['selection_status'],'failed_attempts':selection['failed_attempts'],'screening':selection,'promotion_ready':False})
         subprocess.run([sys.executable,str(ROOT/'scripts/report.py'),'--ledger',str(out/'campaign.jsonl'),'--output',str(out/'report')],check=True)
@@ -413,7 +447,7 @@ def main(argv=None):
     if not resultpath.exists() and not any(r.get('phase')=='confirm' for r in ledger):
         raise ValueError('Confirmation has not started; run confirm before summarize')
     rows=[json.loads(s) for s in resultpath.read_text().splitlines()] if resultpath.exists() else []
-    verify_result_rows(rows,ledger,'confirm')
+    verify_result_rows(rows,ledger,'confirm',out)
     if not rows:
         raise ValueError('Confirmation has not started; no attempts recorded')
     expected={(c['id'],r) for c in cases if c['split']=='confirmation' for r in (0,selection['confirmation_challenger'])}

@@ -510,3 +510,80 @@ def test_existing_receipt_blocks_direct_retry(offline_screen,monkeypatch):
     with pytest.raises(ValueError,match='receipt already exists'):
         m.execute_case(case,run,'screen',out,'role',data['task_contract'])
     assert path.read_bytes()==before
+
+
+def test_post_invoke_crash_preserves_pending_marker_and_blocks_retry(tmp_path,monkeypatch,case):
+    import json
+    out=tmp_path/'campaign';m.main(['prepare','--output',str(out)])
+    run=json.loads((out/'design.json').read_text())['runs'][0]
+    aid=f'screen-{case["id"]}-0'
+    marker=out/'receipts'/f'{aid}.pending.json'
+    calls=[]
+    def success(*args):
+        pending=json.loads(marker.read_text())
+        assert pending['outcome']=='unknown' and pending['status']=='pending'
+        calls.append('provider returned success')
+        return {'status':'success'}, {'choice':'B','next_test':'T3','protected_metric':'M1',
+            'interpretation':'inconclusive','reason':'Offline response'}, .1, None
+    monkeypatch.setattr(m,'invoke',success)
+    def crash(*args):raise RuntimeError('Crash after provider return, before final receipt')
+    monkeypatch.setattr(m,'score',crash)
+    with pytest.raises(RuntimeError,match='Crash after provider'):
+        m.execute_case(case,run,'screen',out,'role',{})
+    assert not (out/'receipts'/f'{aid}.json').exists()
+    assert not any(r.get('record_type')=='attempt' for r in m.load_ledger(out/'campaign.jsonl'))
+    assert json.loads(marker.read_text())['outcome']=='unknown'
+    with pytest.raises(ValueError,match='pending marker already exists'):
+        m.execute_case(case,run,'screen',out,'role',{})
+    with pytest.raises(ValueError,match='Batch already started'):
+        m.main(['screen','--output',str(out)])
+    assert calls==['provider returned success']
+
+
+@pytest.mark.parametrize('phase', ['screen','confirm'])
+@pytest.mark.parametrize('suffix', ['.json','.pending.json'])
+def test_orphan_phase_evidence_blocks_batch_before_any_provider(tmp_path,monkeypatch,phase,suffix):
+    out=tmp_path/'campaign';m.main(['prepare','--output',str(out)])
+    artifact=out/'receipts'/f'{phase}-orphan-0{suffix}'
+    artifact.write_text('{"outcome":"unknown"}')
+    before=artifact.read_bytes()
+    monkeypatch.setattr(m,'invoke',lambda *args:pytest.fail('Orphan phase evidence must block provider calls'))
+    with pytest.raises(ValueError,match='Batch already started'):
+        m.main([phase,'--output',str(out)])
+    assert artifact.read_bytes()==before
+
+
+@pytest.mark.parametrize('phase', ['screen','confirm'])
+def test_receipt_tampering_blocks_downstream_actions(offline_screen,monkeypatch,phase):
+    import json
+    out,_=offline_screen
+    if phase=='confirm':m.main(['confirm','--output',str(out)])
+    ledger=m.load_ledger(out/'campaign.jsonl')
+    attempt=next(r for r in ledger if r.get('record_type')=='attempt' and r['phase']==phase)
+    receipt=out/attempt['evidence']
+    data=json.loads(receipt.read_text());data['answer']['reason']='Tampered after canonical append'
+    receipt.write_text(json.dumps(data))
+    monkeypatch.setattr(m,'invoke',lambda *args:pytest.fail('Tampered evidence must block provider calls'))
+    with pytest.raises(ValueError,match='Receipt hash differs from canonical ledger'):
+        m.main(['confirm' if phase=='screen' else 'summarize','--output',str(out)])
+    assert not (out/'summary.json').exists()
+
+
+def test_pending_marker_is_synced_before_provider(tmp_path,monkeypatch,case):
+    import json
+    out=tmp_path/'campaign';m.main(['prepare','--output',str(out)])
+    run=json.loads((out/'design.json').read_text())['runs'][0]
+    syncs=[]
+    real_sync=m.os.fsync
+    def sync(fd):
+        real_sync(fd)
+        syncs.append(fd)
+    monkeypatch.setattr(m.os,'fsync',sync)
+    def fail(*args):
+        assert len(syncs)>=2  # marker file and its parent directory
+        return {'status':'timeout'},None,.1,'Outcome unavailable'
+    monkeypatch.setattr(m,'invoke',fail)
+    result=m.execute_case(case,run,'screen',out,'role',{})
+    assert result['guard_ok'] is False and result['values']['decision_score'] is None
+    attempt=m.load_ledger(out/'campaign.jsonl')[-1]
+    assert attempt['receipt_sha256']==m.digest(out/attempt['evidence'])
