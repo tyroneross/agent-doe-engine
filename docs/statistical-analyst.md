@@ -10,6 +10,15 @@ Start with `examples/analyst-plan.json`. Replace the synthetic scope and measure
 python3 scripts/analyst.py check --plan experiment-plan.json
 ```
 
+Qualified plans require:
+
+- `system_goal`: `purpose`, `user`, `success_criteria` and `protected_outcomes`. Each criterion/outcome has a stable `id` and `description`.
+- Every primary objective links to success criterion IDs through `goal_links`.
+- Every guardrail names protected outcome IDs through `protects`; every protected outcome must have guardrail coverage.
+- Every factor explains `goal_contribution` and `potential_harm`, and names guardrail objective names through `guardrails`.
+
+For example, search latency contributes to finding useful answers sooner. Retrieval relevance and accessibility protect the usefulness of that speed. An experiment that removes either must fail the corresponding guardrail. Existing plans missing this context now return readiness issues; use the updated example to migrate them. These checks validate declarations and references. The analyst still needs evidence that the objective and guardrail measure the user's actual goal.
+
 Exit 0 means required declarations passed; exit 1 means the plan needs work; exit 2 means invalid input. Passing is not proof of scorer validity, power, human review or task independence. The analyst must inspect the named evidence. The host role is defined in `agents/statistical-analyst.md`; it does not run experiment mutations or authorize promotion.
 
 Choose two distinct concrete levels per factor. Three-level, mixed-level, split-plot and response-surface designs need a compatible method and are not silently converted. Justify interactions before screening. Budget independently for confirmation.
@@ -79,7 +88,7 @@ python3 scripts/analyst.py amendment --previous experiment-plan.json \
   --proposed next-plan.json --amendment amendment.json
 ```
 
-The amendment requires `previous_plan_hash`, `reason`, `evidence` and `expected_information`. Use a new `batch_id`. If `confirmation_used_for_tuning:true`, reserve a fresh confirmation split. Start a new campaign ledger for a new frozen plan and link its predecessor through the recorded decision; never overwrite a prior campaign.
+The amendment requires `previous_plan_hash`, `reason`, `evidence`, `expected_information` and `goal_impact`. Changing factors, objectives, stopping, sample budget, splits, randomization or blocking also requires `risks_and_guardrails`. Changes to `system_goal` or primary/guardrail acceptance definitions require a new campaign. Frozen acceptance includes objective membership and every primary/guardrail field except descriptions and review metadata. It also includes campaign guard logic, selection method, independent unit, target population, scorer and fixture identities. This preserves weights, thresholds and future decision fields as well as goal/protection links. An omitted role means primary. Use a new `batch_id`. Every amendment must explicitly declare the boolean `confirmation_used_for_tuning`. Moving the old confirmation split into screening requires `true` and a fresh confirmation split; previously used screening data is not fresh confirmation data. Split names remain declarations, so reviewers must also check the underlying item identities. Start a new campaign ledger for a new frozen plan and link its predecessor through the recorded decision; never overwrite a prior campaign.
 
 ## 4. Compare paired observations
 

@@ -36,3 +36,5 @@ Hypothesis generation and factor confirmation are the host LLM's job. The script
 Use `agents/statistical-analyst.md` to plan and assess DOE batches. Validate declarations with `scripts/analyst.py`, retain attempts/decisions with `scripts/experiment_ledger.py`, render Calm Precision HTML/CSV/Markdown with `scripts/report.py`, and use `scripts/paired_analysis.py` for supported paired responses. See `docs/statistical-analyst.md`. TypeSafe/Jev is optional and disabled unless explicitly configured with cloud permission and a user key.
 
 All UI must use Calm Precision: grouped rows, quiet text status, progressive detail, semantic numbers, keyboard controls and responsive layouts.
+
+Before choosing variables, read the host system purpose and protected user outcomes. Qualified plans link primary objectives to that purpose and factors to goal contributions, potential harms and guardrails. Interpret each result and next test against those outcomes; a proxy improvement cannot buy off a protected-outcome regression.

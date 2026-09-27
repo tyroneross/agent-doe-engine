@@ -5,13 +5,83 @@
   "batch_id": "screen-1",
   "scorer_id": "fixture-scorer-v1",
   "fixture_id": "synthetic-tasks-v1",
-  "factors": [{"name":"workers","low":1,"high":4},{"name":"batch","low":8,"high":32}],
-  "objectives": [{"name":"latency_ms","role":"primary","driver":"task completion","direction":"lower","baseline":100,"min_effect":5,"unit":"ms","measurement_method":"Elapsed monotonic time after fixed warmup","validity":"validated","validity_evidence":"Synthetic fixture only; known output and timer sensitivity checks"}],
+  "factors": [
+    {
+      "name": "workers",
+      "low": 1,
+      "high": 4,
+      "goal_contribution": "More workers may reduce the time users wait for a completed task.",
+      "potential_harm": "Concurrent work may introduce races or lose task results.",
+      "guardrails": [
+        "correctness"
+      ]
+    },
+    {
+      "name": "batch",
+      "low": 8,
+      "high": 32,
+      "goal_contribution": "Larger batches may reduce per-task overhead and shorten completion time.",
+      "potential_harm": "Batching may associate a result with the wrong task or omit a task.",
+      "guardrails": [
+        "correctness"
+      ]
+    }
+  ],
+  "objectives": [
+    {
+      "name": "latency_ms",
+      "role": "primary",
+      "driver": "task completion",
+      "direction": "lower",
+      "baseline": 100,
+      "min_effect": 5,
+      "unit": "ms",
+      "measurement_method": "Elapsed monotonic time after fixed warmup",
+      "validity": "validated",
+      "validity_evidence": "Synthetic fixture only; known output and timer sensitivity checks",
+      "goal_links": [
+        "responsive-task-completion"
+      ]
+    },
+    {
+      "name": "correctness",
+      "role": "guardrail",
+      "protects": [
+        "correct-task-result"
+      ],
+      "direction": "higher",
+      "min_acceptable": 1,
+      "unit": "fraction",
+      "measurement_method": "Exact comparison of every task result with its known fixture answer",
+      "validity": "validated",
+      "validity_evidence": "Synthetic fixture only; a deliberately corrupted or missing task result fails the exact comparison"
+    }
+  ],
   "run_budget": 32,
   "confirmation_units": 8,
-  "split": {"screening_id":"train-v1","confirmation_id":"holdout-v1","independent":true},
+  "split": {
+    "screening_id": "train-v1",
+    "confirmation_id": "holdout-v1",
+    "independent": true
+  },
   "randomization": "Randomize cells with recorded seed; pair arms on each task",
   "blocking": "Block by task; keep machine and provider version fixed",
   "stopping_rule": "Fixed budget; no repeated significance peeking",
-  "guard": "All correctness checks pass; failed or absent guard blocks promotion"
+  "guard": "All correctness checks pass; failed or absent guard blocks promotion",
+  "system_goal": {
+    "purpose": "Return correct task results promptly so users can complete their work.",
+    "user": "People using the task-processing application to complete a task.",
+    "success_criteria": [
+      {
+        "id": "responsive-task-completion",
+        "description": "Users receive a completed task result without unnecessary waiting."
+      }
+    ],
+    "protected_outcomes": [
+      {
+        "id": "correct-task-result",
+        "description": "Concurrency or batching must not change a correct result into an incorrect result."
+      }
+    ]
+  }
 }
