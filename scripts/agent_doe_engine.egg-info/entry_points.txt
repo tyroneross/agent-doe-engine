@@ -1,5 +1,10 @@
 [console_scripts]
+agent-doe-engine-analyst = analyst:main
+agent-doe-engine-assess = semantic_assessor:main
 agent-doe-engine-doe = doe:main
+agent-doe-engine-ledger = experiment_ledger:main
+agent-doe-engine-paired = paired_analysis:main
+agent-doe-engine-report = report:main
 agent-doe-engine-suggest-factors = suggest_factors:main
 agent-doe-engine-validate-factors = validate_factors:main
 agent-doe-engine-worktree = worktree:main

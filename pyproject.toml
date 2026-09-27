@@ -23,10 +23,21 @@ agent-doe-engine-doe = "doe:main"
 agent-doe-engine-suggest-factors = "suggest_factors:main"
 agent-doe-engine-validate-factors = "validate_factors:main"
 agent-doe-engine-worktree = "worktree:main"
+agent-doe-engine-analyst = "analyst:main"
+agent-doe-engine-paired = "paired_analysis:main"
+agent-doe-engine-ledger = "experiment_ledger:main"
+agent-doe-engine-report = "report:main"
+agent-doe-engine-assess = "semantic_assessor:main"
 
 [tool.setuptools]
 py-modules = [
   "doe",
+  "doe_stats",
+  "analyst",
+  "paired_analysis",
+  "experiment_ledger",
+  "report",
+  "semantic_assessor",
   "loop",
   "metric_runner",
   "objectives",
@@ -43,3 +54,6 @@ dev = ["pytest>=8.0"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.setuptools.data-files]
+"share/agent-doe-engine" = ["scripts/report_theme.css"]

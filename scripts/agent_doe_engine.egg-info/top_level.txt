@@ -1,7 +1,13 @@
+analyst
 doe
+doe_stats
+experiment_ledger
 loop
 metric_runner
 objectives
+paired_analysis
+report
+semantic_assessor
 suggest_factors
 validate_factors
 worktree

@@ -1,0 +1,17 @@
+{
+  "question": "Which concurrency and batch setting improves task latency without failing correctness?",
+  "target_population": "Fixture tasks; production transfer requires new representative tasks",
+  "independent_unit": "independent task",
+  "batch_id": "screen-1",
+  "scorer_id": "fixture-scorer-v1",
+  "fixture_id": "synthetic-tasks-v1",
+  "factors": [{"name":"workers","low":1,"high":4},{"name":"batch","low":8,"high":32}],
+  "objectives": [{"name":"latency_ms","role":"primary","driver":"task completion","direction":"lower","baseline":100,"min_effect":5,"unit":"ms","measurement_method":"Elapsed monotonic time after fixed warmup","validity":"validated","validity_evidence":"Synthetic fixture only; known output and timer sensitivity checks"}],
+  "run_budget": 32,
+  "confirmation_units": 8,
+  "split": {"screening_id":"train-v1","confirmation_id":"holdout-v1","independent":true},
+  "randomization": "Randomize cells with recorded seed; pair arms on each task",
+  "blocking": "Block by task; keep machine and provider version fixed",
+  "stopping_rule": "Fixed budget; no repeated significance peeking",
+  "guard": "All correctness checks pass; failed or absent guard blocks promotion"
+}

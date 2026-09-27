@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: agent-doe-engine
-Version: 0.1.0
+Version: 0.2.0
 Summary: A design-of-experiments engine for tuning AI agents: DOE matrix, multi-response effects, scalarization / desirability / Pareto selection, autoresearch fallback.
 Author-email: "Tyrone Ross, Jr" <46267523+tyroneross@users.noreply.github.com>
 License-Expression: Apache-2.0
@@ -71,8 +71,39 @@ When you care about several numbers that fight each other (faster, but cheaper, 
 | Method | What it does | Use when |
 |---|---|---|
 | **scalarize** | Picks the best weighted blend of your goals | You can rank goals by weight |
-| **desirability** | Every goal must clear a minimum bar, not just average out | No single goal can be sacrificed |
+| **desirability** | Geometric mean of per-goal desirabilities: a zero on any goal zeroes the run. With `min_acceptable`/`target` declared the bar is absolute (Derringer-Suich); without them it is relative to the batch | No single goal can be sacrificed |
 | **pareto** | Shows all the best trade-offs (the options where improving one number can only come by hurting another) | You want to see the choices before committing |
+
+## Goals, guardrails, and knowing when you are done
+
+Each objective carries a `role`. A **primary** must improve (meet `target`, or beat `baseline` by `min_effect`, the smallest change worth shipping). A **guardrail** must not degrade (never worse than `min_acceptable`, else `baseline`); it is a constraint, and a run that breaks it cannot win. A **quality** metric is reported and never decides. Every primary names the product `driver` it serves.
+
+```json
+{"objectives": [
+  {"name": "latency_ms", "direction": "lower", "role": "primary", "driver": "page load",
+   "baseline": 118, "target": 85, "min_effect": 5},
+  {"name": "accuracy", "direction": "higher", "role": "guardrail", "min_acceptable": 0.90}
+ ], "selection": "desirability"}
+```
+
+`analyze` reports ranked effects and the next experiment. Explicit failed execution guards make a cell ineligible, including a failed replicate. Legacy rows with missing guards remain descriptive.
+
+`confirm` separates `numerical_confirmed` (sample means meet thresholds and agree with model predictions) from `promotion_ready` / `done`. Promotion additionally requires a matching provenance contract, passing guards, validated measurements, independent confirmation split and review attestation. No contract means no `ship`. These attestations are checked for consistency; the engine cannot authenticate the review or prove independence. Point thresholds are not statistical superiority/noninferiority tests. See [analyst workflow](docs/statistical-analyst.md).
+
+## Analyst and visible experiments
+
+The [statistical analyst](agents/statistical-analyst.md) qualifies measurements, interprets effects and proposes changes between frozen batches. Python checks plan declarations and amendments and computes paired comparisons. Every campaign can keep an append-only ledger and generate an offline Calm Precision table showing each setting, measurement, result, failed guard, and proposed next change.
+
+```bash
+python3 scripts/analyst.py check --plan examples/analyst-plan.json
+python3 scripts/experiment_ledger.py init --ledger campaign.jsonl --record campaign.json
+python3 scripts/experiment_ledger.py append-attempt --ledger campaign.jsonl --record attempt.json
+python3 scripts/experiment_ledger.py append-decision --ledger campaign.jsonl --record decision.json
+python3 scripts/report.py --ledger campaign.jsonl --output report
+python3 scripts/paired_analysis.py --observations pairs.jsonl --direction lower --margin 5
+```
+
+TypeSafe/Jev is optional for semantic triage or atomic rubric assessment. It requires an explicit provider option, cloud permission and a user key. Disabled mode makes no request; provider errors never silently fall back. See [workflow and schemas](docs/statistical-analyst.md).
 
 ## Built for agent tuning
 
@@ -108,6 +139,9 @@ python3 scripts/doe.py generate --factors '[{"name":"workers","low":2,"high":8},
 # 3. run each row, measure every objective into results.jsonl, then:
 python3 scripts/doe.py analyze --design doe.json --results results.jsonl \
   --objectives '{"objectives":[{"name":"latency","direction":"lower","weight":0.7},{"name":"cost","direction":"lower","weight":0.3}],"selection":"scalarize"}'
+# 4. read next_step; when it says confirm, measure 3-10 runs at best_factors and judge them:
+python3 scripts/doe.py confirm --design doe.json --results results.jsonl \
+  --objectives objectives.json --confirmation confirm.jsonl
 ```
 
 Full walkthrough and the method/math: [`docs/usage.md`](docs/usage.md), [`docs/method.md`](docs/method.md).

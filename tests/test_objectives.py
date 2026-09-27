@@ -336,7 +336,7 @@ class TestSelectBest:
         expected_keys = {
             "method", "bounds", "scores", "best_run_id",
             "best_score", "pareto_front", "best_values", "warnings",
-            "feasible_run_ids", "infeasible", "contenders",
+            "feasible_run_ids", "infeasible", "contenders", "unknown_guard_run_ids",
         }
         assert expected_keys == self._result_keys(result)
 
@@ -345,7 +345,7 @@ class TestSelectBest:
         expected_keys = {
             "method", "bounds", "scores", "best_run_id",
             "best_score", "pareto_front", "best_values", "warnings",
-            "feasible_run_ids", "infeasible", "contenders",
+            "feasible_run_ids", "infeasible", "contenders", "unknown_guard_run_ids",
         }
         assert expected_keys == self._result_keys(result)
 
@@ -354,7 +354,7 @@ class TestSelectBest:
         expected_keys = {
             "method", "bounds", "scores", "best_run_id",
             "best_score", "pareto_front", "best_values", "warnings",
-            "feasible_run_ids", "infeasible", "contenders",
+            "feasible_run_ids", "infeasible", "contenders", "unknown_guard_run_ids",
         }
         assert expected_keys == self._result_keys(result)
 
@@ -593,3 +593,71 @@ class TestNoiseFloor:
         r = select_best(runs, self.OBJS_WITH_FLOOR, method="scalarize")
         assert r["bounds"]["recall"].get("degenerate") is not True
         assert r["best_run_id"] == 2
+
+
+@pytest.mark.parametrize("method", ["scalarize", "desirability", "pareto"])
+def test_execution_guard_excludes_failed_cell(method):
+    runs = [{"run_id": 0, "values": {"score": 0}, "guard_ok": False},
+            {"run_id": 1, "values": {"score": 10}, "guard_ok": True}]
+    result = select_best(runs, [{"name": "score", "direction": "lower"}], method)
+    assert result["best_run_id"] == 1
+    assert result["pareto_front"] == [1]
+    assert result["infeasible"] == {0: ["guard_ok"]}
+    assert result["bounds"]["score"] == {"min": 10, "max": 10}
+
+
+@pytest.mark.parametrize("guard", ["false", "true", None, 0, 1, [], {}])
+def test_malformed_guard_is_rejected(guard):
+    with pytest.raises(ValueError, match="guard_ok must be a boolean"):
+        select_best([{"run_id": 0, "values": {"score": 1}, "guard_ok": guard}],
+                    [{"name": "score"}])
+
+
+def test_missing_guard_remains_explicitly_unknown():
+    result = select_best([{"run_id": 0, "values": {"score": 1}}], [{"name": "score"}])
+    assert result["best_run_id"] == 0
+    assert result["unknown_guard_run_ids"] == [0]
+
+
+def test_all_guards_failed_yields_no_candidate():
+    result = select_best([{"run_id": 0, "values": {"score": 1}, "guard_ok": False}],
+                         [{"name": "score"}])
+    assert result["best_run_id"] is None
+    assert result["scores"] == []
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), True, "1", None])
+def test_invalid_guardrail_measurement_is_infeasible(value):
+    from objectives import is_feasible
+    assert is_feasible({"quality": value},
+                       [{"name": "quality", "role": "guardrail", "baseline": 1}]) == (False, ["quality"])
+
+
+def test_missing_guardrail_measurement_is_infeasible():
+    from objectives import is_feasible
+    assert is_feasible({}, [{"name": "quality", "role": "guardrail", "baseline": 1}]) == (False, ["quality"])
+
+
+@pytest.mark.parametrize("field,value", [("weight", -1), ("target", float("nan")),
+                                         ("baseline", "5"), ("min_effect", -1),
+                                         ("noise_floor", float("inf")), ("target", True)])
+def test_invalid_objective_limits_rejected(field, value):
+    from objectives import validate_objectives
+    assert validate_objectives([{"name": "score", field: value}])["errors"]
+
+
+
+@pytest.mark.parametrize("method", ["scalarize", "desirability", "pareto"])
+def test_duplicate_run_id_cannot_overwrite_guardrail_feasibility(method):
+    runs = [{"run_id":0,"values":{"speed":1,"error":1}},
+            {"run_id":0,"values":{"speed":10,"error":0}}]
+    objs = [{"name":"speed","direction":"lower","role":"primary"},
+            {"name":"error","direction":"lower","role":"guardrail","min_acceptable":.1}]
+    with pytest.raises(ValueError, match="duplicate run_id"):
+        select_best(runs, objs, method)
+
+
+def test_overflow_measurement_is_value_error():
+    from objectives import finite_measurement
+    with pytest.raises(ValueError, match="finite range"):
+        finite_measurement(10 ** 400)

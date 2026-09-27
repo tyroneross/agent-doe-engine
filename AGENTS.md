@@ -16,8 +16,9 @@ Optimize one or more measurable numbers by experiment, never by intuition.
 1. **Setup.** Identify factors (things you can change: constants, env vars, config) and objectives (numbers you can measure with a one-line command). Each objective has a `direction` (lower/higher) and a `weight`. Pick a `selection` method (`scalarize` | `desirability` | `pareto`).
 2. **Design.** With >=2 factors, generate a DOE matrix: `python3 scripts/doe.py detect <k>` then `python3 scripts/doe.py generate --factors <json> --design auto`. With 1 factor, use the autoresearch loop (`scripts/loop.py`).
 3. **Run.** For each row in the design (randomized order): apply the factor values, measure every objective via its `metric_cmd`, run the guard, record `{run_id, values:{...}, guard_ok}` to `.agent-doe-engine/optimize/results.jsonl`, then revert (each DOE run starts from the same baseline).
-4. **Analyze.** `python3 scripts/doe.py analyze --design doe.json --results results.jsonl --objectives objectives.json` gives ranked effects per objective plus the best run by the chosen selection method. Apply the winning combination as one commit.
-5. **Review.** Check for overfitting / metric-gaming (the `overfitting-reviewer` rubric) before accepting.
+4. **Analyze.** `python3 scripts/doe.py analyze --design doe.json --results results.jsonl --objectives objectives.json` gives ranked effects per objective plus the best run by the chosen selection method. Treat it as a candidate; confirm before applying.
+5. **Confirm.** Use `doe.py confirm --contract promotion-contract.json` with matched candidate/config/fixture/scorer/split identities and passing guards. Numerical confirmation alone is not promotion readiness.
+6. **Review.** Check for overfitting / metric-gaming (the `overfitting-reviewer` rubric) before accepting.
 
 ## Multi-objective rules
 
@@ -29,3 +30,9 @@ Optimize one or more measurable numbers by experiment, never by intuition.
 ## Host adaptation
 
 Hypothesis generation and factor confirmation are the host LLM's job. The scripts are deterministic and host-neutral. Spawn parallel workers only when the user explicitly authorizes delegation.
+
+## Statistical analyst and run evidence
+
+Use `agents/statistical-analyst.md` to plan and assess DOE batches. Validate declarations with `scripts/analyst.py`, retain attempts/decisions with `scripts/experiment_ledger.py`, render Calm Precision HTML/CSV/Markdown with `scripts/report.py`, and use `scripts/paired_analysis.py` for supported paired responses. See `docs/statistical-analyst.md`. TypeSafe/Jev is optional and disabled unless explicitly configured with cloud permission and a user key.
+
+All UI must use Calm Precision: grouped rows, quiet text status, progressive detail, semantic numbers, keyboard controls and responsive layouts.

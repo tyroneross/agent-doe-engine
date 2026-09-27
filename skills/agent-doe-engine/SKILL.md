@@ -15,7 +15,7 @@ Optimize numbers you can measure - fast. The core idea is Design of Experiments:
 
 The efficiency is the whole point. One-factor-at-a-time needs a run per variable and still misses interactions. DOE resolves several variables together: 2–3 factors in ≤8 runs, 4–7 in 8 runs, 8–11 in a 12-run screening pass. Build time, latency, token cost, bundle size, coverage, accuracy - anything a one-line command turns into a number.
 
-The metric is the only judge. No "this looks better."
+Use validated measurements, passing execution guards, and independent review to judge a candidate.
 
 `${CLAUDE_PLUGIN_ROOT}` below is the plugin root; from a clone it's the repo root. Runtime state lives in the **consumer** project under `.agent-doe-engine/optimize/`.
 
@@ -88,8 +88,8 @@ Only `adjustable` candidates enter `factors.json`. For each rejection, show the 
 
 For any validated candidate that was flagged `needs_research: true` in §0.1, the host LLM may consult its research capability (web search, Exa, Context7, internal docs - whatever the host has available) to propose best-practice levels. The reasoning is the host's; the plugin only carries the structured input/output.
 
-- **Numeric factor**: replace the heuristic `suggested_levels` ([0.5x, 1x, 2x]) with researched levels (e.g. for `BATCH_SIZE = 32` on a Transformer training loop, research may suggest `[8, 16, 32, 64]` based on published GPU memory tradeoffs).
-- **Categorical factor**: replace the levels with named variants (`{"name": "prompt_variant", "levels": ["chain-of-thought", "few-shot", "zero-shot"]}`). The DOE machinery treats them as categorical levels - useful for prompt A/B/C, tokenizer choice, model variant, scheduler family, etc.
+- **Numeric factor**: replace the heuristic `suggested_levels` (two selected levels) with researched levels (e.g. for `BATCH_SIZE = 32` on a Transformer training loop, research may suggest `[16, 64]` based on published GPU memory tradeoffs).
+- **Categorical factor**: replace the levels with named variants (`{"name": "prompt_variant", "levels": ["few-shot", "zero-shot"]}`). The DOE machinery treats them as categorical levels - useful for prompt A/B, tokenizer choice, model variant, scheduler family, etc.
 
 This step is **off by default**. Enable only when the user explicitly asks ("research good levels for these") OR when the candidate set is small enough (≤3 factors) that the research overhead is worth it. The host invokes its own research tool - there are **no vendor API calls inside this plugin**. Always cite the source the research returned in the `factors.json` `why` field so a future run can audit it.
 
@@ -97,7 +97,7 @@ If the host has no research capability, skip this step silently - the heuristic 
 
 ### 0.5 - Compose the factor file
 
-Write the validated (and optionally researched) candidates to `.agent-doe-engine/optimize/factors.json` in the shape `[{name, low, high}]` (numeric two-level) or `[{name, levels:[...]}]` (numeric multi-level OR categorical). From here, the rest of the SETUP phase (objectives, design) proceeds as Phase 1 below.
+Write the validated (and optionally researched) candidates to `.agent-doe-engine/optimize/factors.json` in the shape `[{name, low, high}]` (numeric two-level) or `[{name, levels:[...]}]` (exactly two distinct numeric or categorical levels; mixed-level designs are unsupported). From here, the rest of the SETUP phase (objectives, design) proceeds as Phase 1 below.
 
 ## Phase 1: SETUP - the goal contract
 
@@ -125,13 +125,13 @@ Every objective is a number, a direction, and a **role** that turns it into a de
 
 | Role | Decision rule | Must carry |
 |---|---|---|
-| `primary` | must **improve** (superiority): meets `target`, or beats `baseline` by `min_effect` | `driver`, plus `target` or `min_effect` |
-| `guardrail` | must **not degrade** (non-inferiority): never worse than `min_acceptable`, else `baseline` | `min_acceptable` or `baseline` |
+| `primary` | must meet a declared improvement threshold: meets `target`, or beats `baseline` by `min_effect` | `driver`, plus `target` or `min_effect` |
+| `guardrail` | must meet a declared guardrail threshold: never worse than `min_acceptable`, else `baseline` | `min_acceptable` or `baseline` |
 | `quality` | reported, never decides | - |
 
 Guardrails are constraints, not score terms: a run that breaks one is infeasible and cannot win however good its primaries look. `min_acceptable` / `target` are absolute limits in raw units (Derringer & Suich 1980); without them desirability is only relative to the batch, so the worst run always scores 0 even when it is acceptable. `min_effect` is the smallest change worth shipping - an effect below it is reported as real-but-not-practical.
 
-**Measure the baseline first, at least 3 times.** Record the mean as `baseline` and set `min_effect` to at least 2x the sample SD (noise floor). `doe.py analyze` runs `validate_objectives` and refuses a contradictory contract (bar better than target); an incomplete one runs, with warnings that say what "done" cannot mean yet.
+**Measure the baseline first, at least 3 times.** Record the mean as `baseline` and set `min_effect` from the practical benefit and use the observed variance to plan independent replication. `doe.py analyze` runs `validate_objectives` and refuses a contradictory contract (bar better than target); an incomplete one runs, with warnings that say what "done" cannot mean yet.
 
 Write it to `.agent-doe-engine/optimize/objectives.json`. One primary objective is the single-metric case - everything below still works (`--min-effect`, `--target`, `--baseline` on the CLI).
 
@@ -203,13 +203,15 @@ Output: ranked main effects + interactions **per objective**, the `selection` re
 | `add_replicates` | saturated design (no error df), degenerate fit, or low power | add 3 center points or replicate 2-3 rows; p-values are not evidence until then |
 | `confirm` | at least one real effect | go to Phase 2c |
 | `extend_range` | a significant main effect with the best run at the edge of its range | the optimum may lie beyond: move that level further out in the next stage (steepest ascent) |
-| `stop_or_widen` | nothing beat noise or `min_effect` | the factors do not move the number (record that), or the levels were too close (widen and re-run) |
+| `stop_or_widen` | nothing beat noise or `min_effect` | report no detected effect under this design; consider power, aliasing, measurement and tested range before widening |
 
 Sequential experimentation is the method, not an option: plan the first matrix at roughly a quarter of the run budget (Montgomery), keep the rest for decoupling, moving, and confirming. Each ranked effect also carries `low_to_high_change` (2x the coefficient) and `practically_significant` (against `min_effect`).
 
 ## Phase 2c: CONFIRM - the done criteria
 
-Nothing is done because a batch had a best row. Run **at least 3 (5-10 per Jensen 2016) confirmation runs at `best_factors`**, one row per run in `confirm.jsonl` as `{"values": {...}}`, then:
+Use the statistical analyst role (`agents/statistical-analyst.md`) before screening and between batches. Freeze a plan with `scripts/analyst.py check --plan PLAN`. Preserve each attempt and decision with `scripts/experiment_ledger.py`; generate visible HTML/CSV/Markdown with `scripts/report.py`.
+
+Reserve independent confirmation data/restarts before tuning. The CLI minimum is three confirmation observations; choose sample size from practical effect and uncertainty, not that minimum alone. Record guard and configuration/fixture/scorer/split identity on every row, then:
 
 ```bash
 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/doe.py confirm \
@@ -217,18 +219,16 @@ python3 ${CLAUDE_PLUGIN_ROOT}/scripts/doe.py confirm \
   --results .agent-doe-engine/optimize/results.jsonl \
   --objectives .agent-doe-engine/optimize/objectives.json \
   --confirmation .agent-doe-engine/optimize/confirm.jsonl \
-  > .agent-doe-engine/optimize/confirm.json
+  --contract .agent-doe-engine/optimize/promotion-contract.json
 ```
 
-`done` is true only when **all** of these hold, and the output says which one failed:
+`numerical_confirmed` checks sample thresholds and model agreement. This is not proof of statistical superiority or practical benefit over baseline. `promotion_ready` and `done` additionally require matching candidate, configuration, fixture and scorer identities, passing guards, validated objectives, independent split and review attestation. The engine checks declared provenance for consistency, not authenticity. Missing or mismatched evidence yields `complete_promotion_contract` or a failed numerical decision, never `ship`. See `docs/statistical-analyst.md` for the contract.
 
-1. every guardrail holds on the confirmation mean;
-2. every primary meets its `target`, or beats `baseline` by at least `min_effect`;
-3. the confirmation mean of every primary lies inside the model's prediction interval (`mean_in_pi`) - the design predicted this result, so it is not a fluke;
-4. at least 3 confirmation runs were measured;
-5. Phase 3's overfitting review passes.
+Use paired item observations (`scripts/paired_analysis.py`) for baseline comparisons where appropriate. Numeric effects use a Student t interval on independent unit means; binary correctness uses exact McNemar. These do not authenticate measurement validity or correct adaptive selection. Do not repeatedly inspect significance until it passes.
 
-`recommendation` is `ship`, `more_confirmation_runs`, or `re_plan`. When the design has no error estimate the interval falls back to the confirmation sample SD and is flagged `pi_source: confirmation_sd` - weaker, and said so.
+Record amendments between batches with the previous plan hash, rationale, evidence and expected information. Never silently rewrite later rows in an active randomized matrix. Reusing a holdout to choose a candidate requires a fresh confirmation split.
+
+Optional Jev must remain disabled by default; read `docs/statistical-analyst.md` before enabling semantic measurements. Its confidence does not replace statistical uncertainty.
 
 ## Single-factor - autoresearch loop
 

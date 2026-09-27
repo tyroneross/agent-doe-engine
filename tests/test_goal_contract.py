@@ -282,8 +282,9 @@ class ConfirmCliTests(unittest.TestCase):
             self._setup(tmp, guardrail_bar=0.88)
             # best for lat: a=+1, b=-1 -> lat ~78, acc ~0.89
             out = self._confirm(tmp, [{"lat": 78 + d, "acc": 0.89} for d in (-1, 0, 1, 0.5, -0.5)])
-            self.assertTrue(out["done"], out)
-            self.assertEqual(out["recommendation"], "ship")
+            self.assertTrue(out["numerical_confirmed"], out)
+            self.assertFalse(out["done"], out)
+            self.assertEqual(out["recommendation"], "complete_promotion_contract")
             lat = next(c for c in out["criteria"] if c["name"] == "lat")
             self.assertEqual(lat["pi_source"], "pure_error")
             self.assertTrue(lat["mean_in_pi"])
@@ -343,7 +344,8 @@ class ConfirmCliTests(unittest.TestCase):
             self.assertEqual(r.returncode, 0, r.stderr)
             out = json.loads(r.stdout)
             self.assertEqual(out["criteria"][0]["pi_source"], "confirmation_sd")
-            self.assertTrue(out["done"])
+            self.assertTrue(out["numerical_confirmed"])
+            self.assertFalse(out["done"])
             self.assertTrue(any("weaker" in w for w in out["warnings"]))
 
     def test_analyze_carries_contract_and_next_step(self):

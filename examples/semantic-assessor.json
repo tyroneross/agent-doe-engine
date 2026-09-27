@@ -1,0 +1,10 @@
+{
+  "provider": "none",
+  "allow_cloud": false,
+  "model": "jev-1.13.0",
+  "required": false,
+  "timeout_seconds": 10,
+  "max_request_bytes": 32768,
+  "max_response_bytes": 65536,
+  "min_confidence": 0.5
+}

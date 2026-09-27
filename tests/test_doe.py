@@ -931,3 +931,14 @@ class AliasedWithTests(unittest.TestCase):
         e = doe.fit_effects(d, y, include_interactions=False)
         rows = doe.rank_findings(e, ["a", "b"])
         self.assertIsNone(rows[0]["aliased_with"])
+
+
+class UnsupportedLevelTests(unittest.TestCase):
+    def test_three_category_levels_are_never_silently_coded(self):
+        with self.assertRaisesRegex(ValueError, "exactly two levels"):
+            doe.map_levels(np.array([[-1], [1]]),
+                           [{"name": "model", "levels": ["a", "b", "c"]}])
+
+    def test_missing_levels_cannot_fall_back_to_coded_values(self):
+        with self.assertRaisesRegex(ValueError, "supply two levels"):
+            doe.map_levels(np.array([[-1], [1]]), [{"name": "model"}])

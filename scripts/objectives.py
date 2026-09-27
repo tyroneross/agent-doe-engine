@@ -116,6 +116,40 @@ def _is_strictly_better(a_val: float, b_val: float, direction: str) -> bool:
 # Public API
 # ---------------------------------------------------------------------------
 
+def guard_status(row: dict) -> bool | None:
+    """Missing guards are unknown; required semantic failures invalidate a row."""
+    if not isinstance(row, dict):
+        raise ValueError("result row must be an object")
+    if "guard_ok" in row and type(row["guard_ok"]) is not bool:
+        raise ValueError(f"run {row.get('run_id', '?')}: guard_ok must be a boolean")
+    semantic = row.get("semantic_assessment")
+    if semantic is not None:
+        if not isinstance(semantic, dict) or type(semantic.get("required")) is not bool:
+            raise ValueError("semantic_assessment requires a boolean required field")
+        if semantic["required"] and not semantic_measurement_available(semantic):
+            return False
+    return row.get("guard_ok")
+
+
+def semantic_measurement_available(receipt: Any) -> bool:
+    """An enabled assessment must explicitly report an available measurement."""
+    return (isinstance(receipt, dict) and receipt.get("status") == "ok"
+            and receipt.get("measurement_available") is True)
+
+
+def finite_measurement(value: Any) -> float:
+    """Reject booleans, missing values and nonfinite measurements."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("measurement must be a finite number")
+    try:
+        result = float(value)
+    except OverflowError as exc:
+        raise ValueError("measurement is outside the supported finite range") from exc
+    if not math.isfinite(result):
+        raise ValueError("non-finite measurement")
+    return result
+
+
 def compute_bounds(runs: list[dict], objectives: list[dict]) -> dict:
     """
     runs = [{"run_id": int, "values": {obj_name: float, ...}}, ...].
@@ -135,7 +169,7 @@ def compute_bounds(runs: list[dict], objectives: list[dict]) -> dict:
                 raise ValueError(
                     f"Run {run.get('run_id', '?')} missing value for objective '{name}'"
                 )
-            values.append(float(run_vals[name]))
+            values.append(finite_measurement(run_vals[name]))
         lo, hi = min(values), max(values)
         floor = obj_by_name[name].get("noise_floor")
         if floor is not None and (hi - lo) <= float(floor):
@@ -295,6 +329,8 @@ def validate_objectives(objs: list[dict] | None) -> dict:
     """
     errors: list[str] = []
     warnings: list[str] = []
+    if objs is not None and not isinstance(objs, list):
+        return {"errors": ["objectives must be a list"], "warnings": []}
     objs = objs or []
 
     if not objs:
@@ -302,11 +338,32 @@ def validate_objectives(objs: list[dict] | None) -> dict:
         return {"errors": errors, "warnings": warnings}
 
     n_primary = 0
+    names = set()
     for idx, obj in enumerate(objs):
+        if not isinstance(obj, dict):
+            errors.append(f"objective[{idx}] must be an object")
+            continue
         label = obj.get("name") or f"objective[{idx}]"
 
-        if not obj.get("name"):
-            errors.append(f"{label}: missing 'name'.")
+        if not isinstance(obj.get("name"), str) or not obj["name"].strip():
+            errors.append(f"objective[{idx}]: missing or invalid 'name'.")
+        elif obj["name"] in names:
+            errors.append(f"{label}: duplicate objective name.")
+        else:
+            names.add(obj["name"])
+        invalid_numeric = False
+        for field in ("weight", "baseline", "target", "min_acceptable", "min_effect", "noise_floor"):
+            if obj.get(field) is not None:
+                try:
+                    value = finite_measurement(obj[field])
+                    if field in ("weight", "min_effect", "noise_floor") and value < 0:
+                        raise ValueError("must be nonnegative")
+                except ValueError:
+                    errors.append(f"{label}: {field} must be a finite number" +
+                                  (" >= 0." if field in ("weight", "min_effect", "noise_floor") else "."))
+                    invalid_numeric = True
+        if invalid_numeric:
+            continue
 
         direction = obj.get("direction", "lower")
         if direction not in VALID_DIRECTIONS:
@@ -378,6 +435,12 @@ def is_feasible(values: dict, objectives: list[dict]) -> tuple[bool, list[str]]:
             continue
         name = obj["name"]
         if name not in values:
+            violated.append(name)
+            continue
+        try:
+            measured = finite_measurement(values[name])
+        except ValueError:
+            violated.append(name)
             continue
         direction = obj.get("direction", "lower")
         bar = _as_float(obj.get("min_acceptable"))
@@ -385,7 +448,7 @@ def is_feasible(values: dict, objectives: list[dict]) -> tuple[bool, list[str]]:
             bar = _as_float(obj.get("baseline"))
         if bar is None:
             continue
-        if not _meets(float(values[name]), bar, direction):
+        if not _meets(measured, bar, direction):
             violated.append(name)
     return (not violated), violated
 
@@ -461,6 +524,31 @@ def select_best(
             f"Unknown method '{method}'. Must be one of: {sorted(valid_methods)}"
         )
 
+    validation = validate_objectives(objectives)
+    if validation["errors"] or not objectives:
+        raise ValueError("; ".join(validation["errors"]) or "No objectives declared")
+    # Selection consumes cell means, not raw replicate rows. Duplicate identity
+    # would overwrite feasibility while leaving multiple contradictory scores.
+    seen = set()
+    for run in runs:
+        guard_status(run)
+        rid = run.get("run_id")
+        if type(rid) is not int:
+            raise ValueError("run_id must be an integer")
+        if rid in seen:
+            raise ValueError(f"duplicate run_id {rid}; aggregate replicates before selection")
+        seen.add(rid)
+    failed = {r["run_id"] for r in runs if guard_status(r) is False}
+    unknown = sorted({r["run_id"] for r in runs if guard_status(r) is None})
+    excluded = {rid: ["guard_ok"] for rid in sorted(failed)}
+    runs = [r for r in runs if r["run_id"] not in failed]
+    if not runs:
+        return {"method": method, "bounds": {}, "scores": [], "best_run_id": None,
+                "best_score": None, "pareto_front": [], "best_values": None,
+                "feasible_run_ids": [], "infeasible": excluded, "contenders": [],
+                "unknown_guard_run_ids": unknown,
+                "warnings": ["Every run failed its guard; no eligible candidate."],
+                "reason": "No run satisfies every guardrail and execution guard."}
     bounds = compute_bounds(runs, objectives)
     front = pareto_front(runs, objectives)
     warnings = [
@@ -486,7 +574,7 @@ def select_best(
     # --- feasibility: guardrails are constraints, not score terms ----------
     feasibility = {run["run_id"]: is_feasible(run["values"], objectives) for run in runs}
     feasible_run_ids = [rid for rid, (ok, _) in feasibility.items() if ok]
-    infeasible = {rid: names for rid, (ok, names) in feasibility.items() if not ok}
+    infeasible = {**excluded, **{rid: names for rid, (ok, names) in feasibility.items() if not ok}}
     feasible_set = set(feasible_run_ids)
     for rid, names in infeasible.items():
         warnings.append(
@@ -514,6 +602,7 @@ def select_best(
         "pareto_front": front,
         "best_values": None,
         "feasible_run_ids": feasible_run_ids,
+        "unknown_guard_run_ids": unknown,
         "infeasible": infeasible,
         "contenders": [],
         "warnings": warnings,

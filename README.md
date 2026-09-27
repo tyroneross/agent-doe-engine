@@ -71,7 +71,24 @@ Each objective carries a `role`. A **primary** must improve (meet `target`, or b
  ], "selection": "desirability"}
 ```
 
-`analyze` then tells you what the numbers say to do next (`next_step`: decouple an alias chain, add replicates, confirm, extend a range, or stop), and `confirm` judges 3-10 confirmation runs at the best setting against the model's prediction interval and the contract. `done` is true only when every guardrail holds, every primary clears its bar, and the confirmation mean lands where the model said it would.
+`analyze` reports ranked effects and the next experiment. Explicit failed execution guards make a cell ineligible, including a failed replicate. Legacy rows with missing guards remain descriptive.
+
+`confirm` separates `numerical_confirmed` (sample means meet thresholds and agree with model predictions) from `promotion_ready` / `done`. Promotion additionally requires a matching provenance contract, passing guards, validated measurements, independent confirmation split and review attestation. No contract means no `ship`. These attestations are checked for consistency; the engine cannot authenticate the review or prove independence. Point thresholds are not statistical superiority/noninferiority tests. See [analyst workflow](docs/statistical-analyst.md).
+
+## Analyst and visible experiments
+
+The [statistical analyst](agents/statistical-analyst.md) qualifies measurements, interprets effects and proposes changes between frozen batches. Python checks plan declarations and amendments and computes paired comparisons. Every campaign can keep an append-only ledger and generate an offline Calm Precision table showing each setting, measurement, result, failed guard, and proposed next change.
+
+```bash
+python3 scripts/analyst.py check --plan examples/analyst-plan.json
+python3 scripts/experiment_ledger.py init --ledger campaign.jsonl --record campaign.json
+python3 scripts/experiment_ledger.py append-attempt --ledger campaign.jsonl --record attempt.json
+python3 scripts/experiment_ledger.py append-decision --ledger campaign.jsonl --record decision.json
+python3 scripts/report.py --ledger campaign.jsonl --output report
+python3 scripts/paired_analysis.py --observations pairs.jsonl --direction lower --margin 5
+```
+
+TypeSafe/Jev is optional for semantic triage or atomic rubric assessment. It requires an explicit provider option, cloud permission and a user key. Disabled mode makes no request; provider errors never silently fall back. See [workflow and schemas](docs/statistical-analyst.md).
 
 ## Built for agent tuning
 
