@@ -486,3 +486,27 @@ def test_empty_confirmation_file_cannot_finalize(offline_screen):
         m.main(['summarize','--output',str(out)])
     assert not (out/'summary.json').exists()
     assert not any(r.get('decision_id')=='confirmation-result' for r in m.load_ledger(out/'campaign.jsonl'))
+
+
+@pytest.mark.parametrize('phase', ['screen','confirm'])
+def test_lost_result_file_cannot_retry_canonical_attempt(offline_screen,monkeypatch,phase):
+    out,_=offline_screen
+    if phase=='confirm':m.main(['confirm','--output',str(out)])
+    before={p.name:p.read_bytes() for p in (out/'receipts').iterdir()}
+    (out/f'{phase}-results.jsonl').unlink()
+    monkeypatch.setattr(m,'invoke',lambda *args:pytest.fail('Must block before a provider call'))
+    with pytest.raises(ValueError,match='Batch already started'):m.main([phase,'--output',str(out)])
+    assert before=={p.name:p.read_bytes() for p in (out/'receipts').iterdir()}
+
+
+def test_existing_receipt_blocks_direct_retry(offline_screen,monkeypatch):
+    import json
+    out,_=offline_screen
+    data=json.loads((Path(m.__file__).parent/'fixtures.json').read_text())
+    case=next(c for c in data['scenarios'] if c['split']=='screening')
+    run=json.loads((out/'design.json').read_text())['runs'][0]
+    path=out/'receipts'/f'screen-{case["id"]}-0.json';before=path.read_bytes()
+    monkeypatch.setattr(m,'invoke',lambda *args:pytest.fail('Must preserve receipt before a provider call'))
+    with pytest.raises(ValueError,match='receipt already exists'):
+        m.execute_case(case,run,'screen',out,'role',data['task_contract'])
+    assert path.read_bytes()==before

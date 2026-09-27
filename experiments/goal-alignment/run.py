@@ -102,6 +102,9 @@ def invoke(prompt, system, timeout=120):
 
 def execute_case(case, run, phase, out, role, task_contract):
     rid=run['_run_id']; settings=run['_factors']; aid=f'{phase}-{case["id"]}-{rid}'
+    receipt_path=out/'receipts'/f'{aid}.json'
+    if receipt_path.exists():
+        raise ValueError('Attempt receipt already exists; preserve evidence without a provider retry')
     system=role+'\n'+FORMAT
     if settings['goal_reasoning']:system+='\n'+GOAL
     if settings['next_test_protocol']:system+='\n'+NEXT
@@ -117,7 +120,8 @@ def execute_case(case, run, phase, out, role, task_contract):
              'provider':raw,'answer':answer,'score':measured,'error':error,
              'frozen_sha256':digest(out/'frozen.json'),
              'frozen_claude_cli_version':json.loads((out/'frozen.json').read_text())['runtime']['claude_cli_version']}
-    save(out/'receipts'/f'{aid}.json',receipt)
+    with receipt_path.open('x') as f:
+        f.write(json.dumps(receipt,indent=2,allow_nan=False)+'\n')
     metrics={k:measured[k] for k in ('decision_score','all_correct','safe_choice')}
     metrics.update(latency_s=elapsed,cost_usd=raw.get('total_cost_usd'), valid_response=int(error is None))
     record={'attempt_id':aid,'batch_id':phase,'cell_id':str(rid),'phase':phase,
@@ -125,7 +129,7 @@ def execute_case(case, run, phase, out, role, task_contract):
             'measurements':{k:{'method':'Frozen authored oracle; one scenario invocation' if k in measured else ('Pinned model, structured output and scorer field validation' if k=='valid_response' else 'Claude CLI receipt / monotonic wall clock'),'unit':'proportion' if k in measured or k=='valid_response' else ('seconds' if k=='latency_s' else 'USD list estimate'),'n':1} for k in metrics},
             'metrics':metrics,'guard_ok':error is None,'error':error,
             'executed_at':datetime.now(timezone.utc).isoformat(),'evidence':str(Path('receipts')/f'{aid}.json'),
-            'scenario_id':case['id']}
+            'scenario_id':case['id'],'receipt_sha256':digest(receipt_path)}
     append_attempt(out/'campaign.jsonl',record)
     response={'run_id':rid,'attempt_id':aid,'unit_id':case['id'],'values':metrics,'guard_ok':error is None}
     with (out/f'{phase}-results.jsonl').open('a') as f:f.write(json.dumps(response)+'\n')
@@ -370,7 +374,9 @@ def main(argv=None):
     if a.stage in ('confirm','summarize') and any(r.get('decision_id')=='confirmation-result' for r in ledger):
         raise ValueError('Confirmation already finalized; preserve its decision and use a new campaign')
     if a.stage in ('screen','confirm'):
-        if (out/f'{a.stage}-results.jsonl').exists():raise ValueError('Batch already started; preserve attempts, no automatic retry/resume')
+        if ((out/f'{a.stage}-results.jsonl').exists()
+                or any(r.get('record_type')=='attempt' and r.get('phase')==a.stage for r in ledger)):
+            raise ValueError('Batch already started; preserve attempts, no automatic retry/resume')
         rng=random.Random(SEED if a.stage=='screen' else SEED+1)
         candidate=None
         if a.stage=='confirm':
